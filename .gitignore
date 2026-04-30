@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.Python
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+.DS_Store
+
+# Training artifacts
+runs/
+wandb/
+checkpoints/
+preprocessing_logs/
+*.pth
+*.ckpt
+*.tar.gz
+
+# Logs / temp
+*.log
+*.tmp
+*.bak
+out.txt
+prompt.md
+debug_*.png
+debug_*.jpg
+
+# Data lists / scratch JSONs (assets/* tracked exceptions kept below)
+assets/tmp.json
+assets/meshes_list.json
+
+# Liegroups build artifacts (vendored package)
+modules/liegroups/build/
+modules/liegroups/*.egg-info/
+
+# FLAME models — distributed under a separate license; user must download
+# from https://flame.is.tue.mpg.de/ after agreeing to the terms.
+assets/FLAME2023/*.pkl
+assets/FLAME_masks/FLAME_masks.pkl
