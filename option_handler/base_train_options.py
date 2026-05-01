@@ -100,6 +100,18 @@ class BaseTrainOptions():
     def initialize_extra(self):
         pass
 
+    def print_options(self):
+        message = '----------------- Options ---------------\n'
+        for cate in self.hierachy.keys():
+            message += '\n[{:}]:\n'.format(cate)
+            for k in self.hierachy[cate]:
+                v = getattr(self.opt, self.cmd2name(k))
+                default = self.parser.get_default(self.cmd2name(k))
+                comment = '\t[default: %s]' % str(default) if v != default else ''
+                message += '{:>25}: {:<30}{}\n'.format(str(k), str(v), comment)
+        message += '----------------- End -------------------'
+        print(message)
+
     def save_json(self, save_path):
         data = {}
         for cate in self.hierachy.keys():

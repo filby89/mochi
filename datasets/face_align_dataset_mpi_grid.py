@@ -333,19 +333,17 @@ class FaceAlignDatasetMPI(data.Dataset):
         else:
             dense_landmarks = None
 
+        dense_fan_landmarks = None
+        dense_mediapipe_landmarks = None
         if getattr(self, 'dense_semantic_landmarks_fname', None) is not None:
             try:
                 dense_semantic_path = self.dense_semantic_landmarks_fname(subject, sequence, frame)
                 dense_semantic_data = np.load(dense_semantic_path) if os.path.exists(dense_semantic_path) else None
-                # print(dense_semantic_data, 'dense semantic path')
-                # raise
                 dense_fan_landmarks = dense_semantic_data['fan_landmarks']
                 dense_mediapipe_landmarks = dense_semantic_data['mediapipe_landmarks']
             except Exception as e:
                 print('Error loading dense semantic landmarks:', e)
                 raise e
-                # dense_landmarks = np.zeros((len(calib['intrinsics']), 5023, 2), dtype=np.float32)
-                # dense_mask_all = torch.zeros((len(calib['intrinsics']), 1), dtype=torch.long)
 
         # print(mediapipe_landmarks.shape)
         # raise
@@ -438,8 +436,8 @@ class FaceAlignDatasetMPI(data.Dataset):
             mp_landmarks_view = mediapipe_landmarks[i] if mediapipe_landmarks is not None else None
 
 
-            dense_fan_landmarks_view = dense_fan_landmarks[i] if dense_landmarks is not None else None
-            dense_mediapipe_landmarks_view = dense_mediapipe_landmarks[i] if dense_landmarks is not None else None
+            dense_fan_landmarks_view = dense_fan_landmarks[i] if dense_fan_landmarks is not None else None
+            dense_mediapipe_landmarks_view = dense_mediapipe_landmarks[i] if dense_mediapipe_landmarks is not None else None
 
             # dense_landmarks_view = dense_landmarks[i] if dense_landmarks is not None else None
             # print(mediapipe_landmarks.shape, mp_landmarks_view.shape, 'mp landmarks shape')

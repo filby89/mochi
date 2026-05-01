@@ -1,0 +1,13 @@
+universe       = vanilla
+executable     = /lustre/fast/fast/pfilntisis/mochi_rebuttal_public/scripts/_smoke_pretrain.sh
+arguments      =
+getenv         = True
+output         = /lustre/fast/fast/pfilntisis/mochi_rebuttal_public/runs/_smoke_stdout.txt
+error          = /lustre/fast/fast/pfilntisis/mochi_rebuttal_public/runs/_smoke_stderr.txt
+log            = /lustre/fast/fast/pfilntisis/mochi_rebuttal_public/runs/_smoke_condor.log
+request_memory = 81920
+request_cpus   = 16
+request_disk   = 50G
+request_gpus   = 1
+requirements   = TARGET.CUDADeviceName == "NVIDIA A100-SXM4-80GB"
+queue 1

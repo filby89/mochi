@@ -93,6 +93,7 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='data', abbr='image-ext', name='image-file-ext', type=str, default='png')
         self.add_arg(cate='data', abbr='calib-dir', name='calibration-directory', type=str, default='')
         self.add_arg(cate='data', abbr='dense-dir', name='dense-landmarks-dir', type=str, default='')
+        self.add_arg(cate='data', abbr='dense-s-dir', name='dense-semantic-landmarks-dir', type=str, default='')
 
         # train
         self.add_arg(cate='train', abbr='niter',  name='num-iterations', type=int, default=argparse.SUPPRESS)

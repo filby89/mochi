@@ -218,7 +218,7 @@ class Trainer(BaseTrainer):
             fan_landmarks_dir='',
             mediapipe_landmarks_dir='',
             dense_landmarks_dir=self.args.dense_landmarks_dir,
-            dense_semantic_landmarks_dir='',
+            dense_semantic_landmarks_dir=self.args.dense_semantic_landmarks_dir,
             normals_dir=self.args.normals_image_directory,
             to_meters=self.args.to_meters,
             depths_dir=self.args.depths_image_directory,
