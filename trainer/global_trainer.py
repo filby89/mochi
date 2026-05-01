@@ -1337,9 +1337,12 @@ class Trainer(BaseTrainer):
                 d['Points2Surface distance %s/train median' % key] = np.median(distances[key])
                 d['Points2Surface distance %s/train std' % key] = np.std(distances[key])
 
+            d['Total loss/train'] = to_numpy(self.loss)
             for key in self.losses:
-                d['%s/train' % key] = to_numpy(self.losses[key])
-            
+                val = to_numpy(self.losses[key])
+                if val != 0.0:
+                    d['%s/train' % key] = val
+
             pprint.pprint(d)
             
             if self.args.wandb:
