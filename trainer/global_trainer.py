@@ -34,13 +34,7 @@ import kornia
 from utils.losses import geodesic_normal_loss_p3d, calculate_map_loss, calculate_gradient_map_loss, _points2surface_metric
 import torch.nn.functional as F
 import kornia
-
-
-# landmarks mediapipe
-# left eyebrow: 17,10,14,12,18,11,16,15,19,13
-# right eyebrow: 3,9,6,5,8,1,2,4,5,7
-# nose: 52,53,54,55,56,57,58,59,60,61,62,63,64
-
+from models.FLAME.pliks_flame_2 import PliksFlameSolver, build_R_world_from_segments, mat_to_axis_angle, world_to_relative_rotations
 
 
 class Trainer(BaseTrainer):
@@ -52,7 +46,6 @@ class Trainer(BaseTrainer):
 
         self.no_jaw = True
 
-        from models.FLAME.pliks_flame_2 import PliksFlameSolver  # <-- NEW
 
         self.flame = FLAME(flame_model_path='assets/FLAME2023/flame2023_no_jaw.pkl', no_jaw=True).to(device)
 
@@ -353,7 +346,7 @@ class Trainer(BaseTrainer):
         self.landmarks_dense_fan = data[dense_fan_landmarks_key][:, views].to(self.device)
         dense_mediapipe_landmarks_key = 'color_camera_dense_mediapipe_landmarks' + suffix
         self.landmarks_dense_mediapipe = data[dense_mediapipe_landmarks_key][:, views].to(self.device)
-        print(self.landmarks_dense_fan.shape, 'dense fan landmarks shape', self.landmarks_dense_mediapipe.shape, 'dense mediapipe landmarks shape')
+
 
         self.landmarks_dense_fan_uv = self.landmarks_dense_fan.clone()
         self.landmarks_dense_fan_uv[..., 0] = self.landmarks_dense_fan_uv[..., 0]/(self.inputs['images'].shape[-1]-1) * 2.0 - 1.0
@@ -1086,7 +1079,6 @@ class Trainer(BaseTrainer):
             V_fit = self.pliks_out['V_fit'] #.detach()                                       # [B, V, 3] ! detach to avoid degeneracy
             # V_fit = inv.get('V_fit_root', inv['V_fit'])
 
-            from models.FLAME.pliks_flame import build_R_world_from_segments, mat_to_axis_angle, world_to_relative_rotations
             J     = self.flame.J_regressor.shape[0]
 
             R_world = build_R_world_from_segments(Rk, self.pliks_solver.seg_list, J)   # [B,J,3,3]
@@ -1259,7 +1251,6 @@ class Trainer(BaseTrainer):
             'Laplacian smoothing loss': self.laplacian_smoothing_loss,
             'Landmarks loss (dense)': all_losses.get('landmarks_loss_dense', 0.0) if getattr(self, 'landmarks_dense', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
             'Landmarks loss (dense) out': all_losses.get('landmarks_loss_dense_out', 0.0) if getattr(self, 'landmarks_dense', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
-            'FLAME regularization loss': self.flame_regularization_loss if self.args.enable_flame_branch else 0.0,
             'β regularizer (PLIKS)': all_losses.get('beta_regularizer_pliks', 0.0) if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'ψ regularizer (PLIKS)': all_losses.get('exp_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Pose regularizer (PLIKS)': all_losses.get('pose_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,

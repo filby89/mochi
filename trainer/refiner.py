@@ -401,7 +401,7 @@ class Trainer(BaseTrainer):
         self.landmarks_dense_fan = data[dense_fan_landmarks_key][:, views].to(self.device)
         dense_mediapipe_landmarks_key = 'color_camera_dense_mediapipe_landmarks' + suffix
         self.landmarks_dense_mediapipe = data[dense_mediapipe_landmarks_key][:, views].to(self.device)
-        print(self.landmarks_dense_fan.shape, 'dense fan landmarks shape', self.landmarks_dense_mediapipe.shape, 'dense mediapipe landmarks shape')
+
 
         self.landmarks_dense_fan_uv = self.landmarks_dense_fan.clone()
         self.landmarks_dense_fan_uv[..., 0] = self.landmarks_dense_fan_uv[..., 0]/(self.inputs['images'].shape[-1]-1) * 2.0 - 1.0
