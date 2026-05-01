@@ -157,9 +157,7 @@ class TrainOptions(BaseTrainOptions):
         # FLAME pose/shape regularizers
         self.add_arg(cate='model', abbr='wexpreg', name='weight-expression-regularization', type=float, default=0.0)
         self.add_arg(cate='model', abbr='wshapereg', name='weight-shape-regularization', type=float, default=0.0)
-        self.add_arg(cate='model', abbr='wneckreg', name='weight-neck-pose-regularization', type=float, default=0.0)
         self.add_arg(cate='model', abbr='wposereg', name='weight-pose-regularization', type=float, default=0.0)
-        self.add_arg(cate='model', abbr='wflamereg', name='weight-flame-regularization', type=float, default=0.0)
 
         self.add_arg(cate='model', abbr='meters', name='to-meters', type=bool, default=False)
 
