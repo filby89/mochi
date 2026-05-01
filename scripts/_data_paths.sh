@@ -11,4 +11,5 @@ DATA_FLAGS=(
   --depths-image-directory   /fast/pfilntisis/TEMPEH_data/data/aws_data/distorted_downsampled_4_culled_grid/color_depth
   --calibration-directory    /fast/pfilntisis/TEMPEH_data/data/aws_data/distorted_downsampled_4_culled_grid/color_cameras
   --dense-landmarks-dir      /fast/pfilntisis/TEMPEH_data/data/aws_data/distorted_downsampled_4_culled_grid/color_dense_landmarks
+  --dense-semantic-landmarks-dir /fast/pfilntisis/TEMPEH_data/data/aws_data/distorted_downsampled_4_culled_grid/color_dense_semantic_landmarks
 )
