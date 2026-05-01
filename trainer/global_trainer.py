@@ -1325,28 +1325,23 @@ class Trainer(BaseTrainer):
 
         if self.global_step % self.args.print_frequency == 0:        
             print('%s, step %d, total loss: %f, ' %(get_time_string(), self.global_step, to_numpy(self.loss)))
-            d= {
-                'Learning rate/train': lr,
-            }
-            # print(self.data['f_reg_global'])
-            # Only compute main model metrics if not in FLAME-only mode
-            # def _points2surface_metric(self, points_to_use, v_scan, v_registration, f_reg_global, flame_masks_triangles):
-            distances = _points2surface_metric(self.global_points, self.data['v_scan'], self.data['v_registration'], self.faces.unsqueeze(0), self.flame_masks_triangles)
-            for key in distances:
-                d['Points2Surface distance %s/train' % key] = np.mean(distances[key])
-                d['Points2Surface distance %s/train median' % key] = np.median(distances[key])
-                d['Points2Surface distance %s/train std' % key] = np.std(distances[key])
-
-            d['Total loss/train'] = to_numpy(self.loss)
+            d = {'Total loss/train': to_numpy(self.loss)}
             for key in self.losses:
                 val = to_numpy(self.losses[key])
                 if val != 0.0:
                     d['%s/train' % key] = val
 
             pprint.pprint(d)
-            
+
             if self.args.wandb:
-                wandb.log(d, step=self.global_step)
+                wandb_d = {'Learning rate/train': lr}
+                wandb_d.update(d)
+                distances = _points2surface_metric(self.global_points, self.data['v_scan'], self.data['v_registration'], self.faces.unsqueeze(0), self.flame_masks_triangles)
+                for key in distances:
+                    wandb_d['Points2Surface distance %s/train' % key] = np.mean(distances[key])
+                    wandb_d['Points2Surface distance %s/train median' % key] = np.median(distances[key])
+                    wandb_d['Points2Surface distance %s/train std' % key] = np.std(distances[key])
+                wandb.log(wandb_d, step=self.global_step)
 
         if (self.global_step % self.args.visualize_frequency == 0):# and (self.global_step > 0):
             try:
@@ -1517,7 +1512,6 @@ class Trainer(BaseTrainer):
                     vertex_colors_scan_pliks = dist_to_rgb(vertex_colors_scan_pliks.detach().cpu().numpy(), min_dist=0.0, max_dist=3.0)
 
                 scan_vertices = self.data['v_scan'][idx]
-                print('Scan_v', scan_vertices.shape)
 
                 for view_id in self.visualization_view_ids:
                     
