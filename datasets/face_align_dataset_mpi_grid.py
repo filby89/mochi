@@ -14,7 +14,6 @@ For comments or questions, please email us at tempeh@tue.mpg.de
 
 import os
 import math
-import glob
 import random
 import imageio
 from skimage.transform import rescale, resize
@@ -24,10 +23,8 @@ import torch
 import torch.utils.data as data
 
 from psbody.mesh import Mesh
-from utils import mesh_sampling, utils
-from utils.camera import load_mpi_camera, rotate_image
+from utils import utils
 from utils.data_augment import get_random_crop_offsets, scale_crop, pad_img_and_intrinsics
-from utils.utils import get_filename
 import cv2
 
 DISABLE_AUGM = False
@@ -56,21 +53,10 @@ class FaceAlignDatasetMPI(data.Dataset):
                 scale_max=1.1,
                 brightness_sigma=0.1 / 3.0, # random brightness perturbation  
                 scan_vertex_count=10000,
-                # parameters to specify the type of images being loaded
-                load_stereo_images=True,
-                load_color_images=False,
-                calibration_blacklist=[],
                 image_file_ext='png',
-                fan_landmarks_dir='',
-                mediapipe_landmarks_dir='',
                 dense_landmarks_dir='',
                 dense_semantic_landmarks_dir='',
                 return_full_scan=False,
-                undistort_images=False,
-                undistorted_K_dir='',
-                # MAE masking & view-dropout parameters
-                masking_ratio=0.0,    # fraction of pixels to mask in augmented image
-                view_drop_prob=1.0,     # probability to drop an entire view
                 to_meters=False,
                 camera_names=None
                 ):
@@ -88,9 +74,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         #         break
         #     f += 1
         # self.split_list = self.split_list[f:f+1]
-        self.load_stereo_images = load_stereo_images
-        self.load_color_images = load_color_images
-        self.calibration_blacklist = calibration_blacklist
         self.return_full_scan = return_full_scan
 
         self.pad_to_vit = bool(pad_to_vit)
@@ -112,10 +95,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         self.mesh_sampler = mesh_sampler
         self.scan_vertex_count = scan_vertex_count
         self.registration_root_dir = registration_root_dir
-        self.undistort_images = undistort_images
-
-        self.masking_ratio = masking_ratio
-        self.view_drop_prob = view_drop_prob
         self._camera_names_override = list(camera_names) if camera_names is not None else None
 
         if os.path.exists(image_dir):
@@ -147,28 +126,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             self.calibration_img_fname_grid = lambda subject, sequence, frame : os.path.join(self.calibration_numpy_dir(subject, sequence, frame), '%s.%s_intrinsics.npz' % (sequence, frame))
         else:
             raise RuntimeError('Invalid calibration directory')
-
-        if os.path.exists(fan_landmarks_dir):
-            self.fan_landmarks_dir = lambda subject, sequence, frame : os.path.join(fan_landmarks_dir, subject, sequence, frame)
-            self.fan_landmarks_fname = lambda subject, sequence, frame : os.path.join(self.fan_landmarks_dir(subject, sequence, frame), '%s.%s.npy' % (sequence, frame))
-            ff = '/fast/pfilntisis/TEMPEH_data/data/training_data/downsampled_images_4_fan_landmarks_hhj1897'
-
-            self.fan_landmarks_orig_fnam = lambda subject, sequence, frame, view : os.path.join(ff, subject, sequence, frame, '%s.%s.%s.npz' % (sequence, frame, view))
-        else:
-            self.fan_landmarks_dir = None
-            self.fan_landmarks_fname = None
-            self.fan_landmarks_orig_fnam = None
-
-        # Optional MediaPipe landmarks
-        if os.path.exists(mediapipe_landmarks_dir):
-            self.mediapipe_landmarks_dir = lambda subject, sequence, frame : os.path.join(mediapipe_landmarks_dir, subject, sequence, frame)
-            self.mediapipe_landmarks_fname = lambda subject, sequence, frame : os.path.join(self.mediapipe_landmarks_dir(subject, sequence, frame), '%s.%s.npy' % (sequence, frame))
-            nn = '/fast/pfilntisis/TEMPEH_data/data/training_data/downsampled_images_4_mediapipe_landmarks_fp32'
-            self.mediapipe_landmarks_orig_fnam = lambda subject, sequence, frame, view : os.path.join(nn, subject, sequence, frame, '%s.%s.%s.npz' % (sequence, frame, view))
-        else:
-            self.mediapipe_landmarks_dir = None
-            self.mediapipe_landmarks_fname = None
-            self.mediapipe_landmarks_orig_fnam = None
 
         if os.path.exists(dense_landmarks_dir):
             self.dense_landmarks_dir = lambda subject, sequence, frame : os.path.join(dense_landmarks_dir, subject, sequence, frame)
@@ -261,31 +218,8 @@ class FaceAlignDatasetMPI(data.Dataset):
         color_images_normals_augmented = []
         color_camera_intrinsics_augmented = []
 
-        stereo_images = []
-        stereo_images_normals = []
-        stereo_camera_intrinsics = []
-        stereo_camera_extrinsics = []
-        stereo_camera_distortions = []
-        stereo_camera_centers = []
-        stereo_images_augmented = []
-        stereo_images_normals_augmented = []
-        stereo_camera_intrinsics_augmented = []
-
-        color_camera_landmarks = []
-        stereo_camera_landmarks = []
-        color_camera_landmarks_augmented = []
-        stereo_camera_landmarks_augmented = []
-
-        stereo_camera_landmarks_masks = []
-
         color_images_depth = []
         color_images_depth_augmented = []
-
-        color_camera_landmarks_masks = []
-        color_camera_landmarks_masks_augmented = []
-
-        color_camera_landmarks_hull_masks = []
-        color_camera_landmarks_hull_masks_augmented = []
 
         color_camera_dense_landmarks = []
         color_camera_dense_landmarks_augmented = []
@@ -297,15 +231,8 @@ class FaceAlignDatasetMPI(data.Dataset):
         color_camera_dense_mediapipe_landmarks = []
         color_camera_dense_mediapipe_landmarks_augmented = []
 
-        camera_names =[]
-
         if self._camera_names_override is not None:
             color_cameras = self._camera_names_override
-        elif self.load_stereo_images:
-            color_cameras = [
-                '23_A', '23_B', '24_A', '24_B', '25_A', '25_B', '26_A', '26_B', '27_A', '27_B',
-                '28_A', '28_B', '29_A', '29_B', '30_A', '30_B'
-            ]
         else:
             color_cameras = [
                 '23_C','24_C','25_C','26_C','27_C',
@@ -317,9 +244,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         frame_grid = imageio.imread(self.img_fname_grid(subject, sequence, frame), pilmode='RGB')
         # normals_grid = imageio.imread(self.normals_img_fname_grid(subject, sequence, frame), pilmode='RGB') if self.normals_img_fname_grid is not None else None
         normals_grid = np.load(self.normals_img_fname_grid(subject, sequence, frame)) if self.normals_img_fname_grid is not None else None
-
-        fan_landmarks = np.load(self.fan_landmarks_fname(subject, sequence, frame)) if self.fan_landmarks_fname is not None else None
-        mediapipe_landmarks = np.load(self.mediapipe_landmarks_fname(subject, sequence, frame)) if getattr(self, 'mediapipe_landmarks_fname', None) is not None else None
 
         if getattr(self, 'dense_landmarks_fname', None) is not None:
             try:
@@ -345,47 +269,17 @@ class FaceAlignDatasetMPI(data.Dataset):
                 print('Error loading dense semantic landmarks:', e)
                 raise e
 
-        # print(mediapipe_landmarks.shape)
-        # raise
-
         depths = np.load(self.depths_fname(subject, sequence, frame)) if self.depths_fname is not None else None
-        # print(depths, 'depths shape')
-        # print(depths.shape, frame_grid.shape, normals_grid.shape)
 
         h_grid, w_grid = frame_grid.shape[:2]
         h_one, w_one = h_grid, w_grid // len(calib['intrinsics'])
 
         perturbation = None
         for i in range(len(calib['intrinsics'])):
-            try:
-                fan_landmarks_scores_masks = np.load(self.fan_landmarks_orig_fnam(subject, sequence, frame, color_cameras[i]))
-            except Exception as e:
-                fan_landmarks_scores_masks = {
-                    'mask': np.array([0], dtype=bool),
-                    'scores': np.zeros((1, 68), dtype=np.float32),
-                }
-
-
-
-            fan_landmarks_mask = fan_landmarks_scores_masks['mask']
-
-            fan_landmarks_scores_avg = fan_landmarks_scores_masks['scores'][0].mean()
-
-            if fan_landmarks_scores_avg < 0.2:
-                fan_landmarks_mask = torch.zeros_like(torch.from_numpy(fan_landmarks_mask), dtype=torch.long)
-            else:
-                fan_landmarks_mask = torch.from_numpy(fan_landmarks_mask).long()
-
-            if fan_landmarks is not None:
-                if fan_landmarks[i][:,0].std() < 1e-3: 
-                    fan_landmarks_mask = torch.zeros_like(fan_landmarks_mask).long()
-
             if depths is not None:
                 depth_img = depths[:, i * w_one:(i + 1) * w_one]
             else:
                 depth_img = None
-
-            # print(depth_img.max(), depth_img.min(), 'depth img max min')
             
             frame_img = frame_grid[:, i * w_one:(i + 1) * w_one, :]
             normals_img = normals_grid[:, i * w_one:(i + 1) * w_one, :] if normals_grid is not None else None
@@ -411,41 +305,16 @@ class FaceAlignDatasetMPI(data.Dataset):
                     out_size=(target_h, target_w),
                 )
 
-                  #fan_landmarks_scores_masks['landmarks'][0])
-                # raise "Mediapipe Landmarks not padded yet"
-                # print(pad_results['image'].shape, frame_img.shape)
                 frame_img = pad_results['image']
                 calib_img['intrinsics'] = pad_results['K']
                 normals_img = pad_results['normals_image']
-                landmarks = pad_results['landmarks']
                 dense_landmarks_view = pad_results['dense_landmarks']
                 depth_img = pad_results['depth_img']
             else:
-                landmarks = fan_landmarks[i] if fan_landmarks is not None else None
                 dense_landmarks_view = dense_landmarks[i] if dense_landmarks is not None else None
-
-            try:
-                mediapipe_landmarks_scores_masks = np.load(self.mediapipe_landmarks_orig_fnam(subject, sequence, frame, color_cameras[i])) if getattr(self, 'mediapipe_landmarks_orig_fnam', None) is not None else None
-            except Exception as e:
-                    mediapipe_landmarks_scores_masks = {
-                    'mask': np.array([0], dtype=bool),
-                    # 'scores': np.zeros((1, 105), dtype=np.float32),
-                }
-
-            # Prepare per-view MediaPipe landmarks (no padding used)
-            mp_landmarks_view = mediapipe_landmarks[i] if mediapipe_landmarks is not None else None
-
 
             dense_fan_landmarks_view = dense_fan_landmarks[i] if dense_fan_landmarks is not None else None
             dense_mediapipe_landmarks_view = dense_mediapipe_landmarks[i] if dense_mediapipe_landmarks is not None else None
-
-            # dense_landmarks_view = dense_landmarks[i] if dense_landmarks is not None else None
-            # print(mediapipe_landmarks.shape, mp_landmarks_view.shape, 'mp landmarks shape')
-            mediapipe_landmarks_mask = torch.from_numpy(mediapipe_landmarks_scores_masks['mask']).long() if mediapipe_landmarks_scores_masks is not None else None
-
-            if mp_landmarks_view is not None:
-                if mp_landmarks_view[:,0].std() < 1e-3: 
-                    mediapipe_landmarks_mask = torch.zeros_like(mediapipe_landmarks_mask).long()
 
             img_with_camera = self.augment_img_with_camera(
                 subject,
@@ -455,146 +324,40 @@ class FaceAlignDatasetMPI(data.Dataset):
                 calib_img,
                 to_meters=to_meters,
                 perturbation=perturbation,
-                landmarks=landmarks,
                 depth_img=depth_img,
-                extra_landmarks=mp_landmarks_view,
                 dense_landmarks=dense_landmarks_view,
                 dense_fan_landmarks=dense_fan_landmarks_view,
                 dense_mediapipe_landmarks=dense_mediapipe_landmarks_view
             )
             perturbation = img_with_camera['perturbation'] 
-            
-            # print(img_with_camera['depth_map'].max(), img_with_camera['depth_map'].min(), 'depth img max min 2')
-            # print(img_with_camera['depth_map_augmented'].max(), img_with_camera['depth_map_augmented'].min(), 'depth img max min aug')
-# 
-            # raise 
 
-            # print(img_with_camera.keys())
             if img_with_camera is not None:
-                    # print(img_with_camera['intrinsics'].shape, 'intri')
-                    # if '_C' in get_filename(calib_fname):
-                    color_images.append(img_with_camera['image'])
-                    color_camera_intrinsics.append(img_with_camera['intrinsics'])
-                    color_camera_extrinsics.append(img_with_camera['extrinsics'])
-                    color_camera_distortions.append(img_with_camera['radial_distortion'])
-                    color_camera_centers.append(img_with_camera['camera_center'])
-                    color_images_augmented.append(img_with_camera['image_augmented'])
-                    color_camera_intrinsics_augmented.append(img_with_camera['intrinsics_augmented'])
-                    # color_camera_landmarks_masks.append(landmarks_mask)
-                    # camera_names.append(get_filename(calib_fname))
+                color_images.append(img_with_camera['image'])
+                color_camera_intrinsics.append(img_with_camera['intrinsics'])
+                color_camera_extrinsics.append(img_with_camera['extrinsics'])
+                color_camera_distortions.append(img_with_camera['radial_distortion'])
+                color_camera_centers.append(img_with_camera['camera_center'])
+                color_images_augmented.append(img_with_camera['image_augmented'])
+                color_camera_intrinsics_augmented.append(img_with_camera['intrinsics_augmented'])
 
-                    if img_with_camera['landmarks'] is not None:
-                        color_camera_landmarks.append(img_with_camera['landmarks'])
-                        color_camera_landmarks_augmented.append(img_with_camera['landmarks_augmented'])
+                if img_with_camera.get('dense_landmarks', None) is not None:
+                    color_camera_dense_landmarks.append(img_with_camera['dense_landmarks'])
+                    color_camera_dense_landmarks_augmented.append(img_with_camera['dense_landmarks_augmented'])
+                    color_camera_dense_landmarks_masks.append(dense_mask_all[i])
+                    color_camera_dense_landmarks_masks_augmented.append(dense_mask_all[i])
 
-                    if img_with_camera.get('dense_landmarks', None) is not None:
-                        color_camera_dense_landmarks.append(img_with_camera['dense_landmarks'])
-                        color_camera_dense_landmarks_augmented.append(img_with_camera['dense_landmarks_augmented'])
+                    color_camera_dense_fan_landmarks.append(img_with_camera['dense_fan_landmarks'])
+                    color_camera_dense_fan_landmarks_augmented.append(img_with_camera['dense_fan_landmarks_augmented'])
+                    color_camera_dense_mediapipe_landmarks.append(img_with_camera['dense_mediapipe_landmarks'])
+                    color_camera_dense_mediapipe_landmarks_augmented.append(img_with_camera['dense_mediapipe_landmarks_augmented'])
 
-                        color_camera_dense_landmarks_masks.append(dense_mask_all[i])
-                        color_camera_dense_landmarks_masks_augmented.append(dense_mask_all[i])
+                if img_with_camera['normals_image'] is not None:
+                    color_images_normals.append(img_with_camera['normals_image'])
+                    color_images_normals_augmented.append(img_with_camera['normals_image_augmented'])
 
-                        color_camera_dense_fan_landmarks.append(img_with_camera['dense_fan_landmarks'])
-                        color_camera_dense_fan_landmarks_augmented.append(img_with_camera['dense_fan_landmarks_augmented'])
-                        color_camera_dense_mediapipe_landmarks.append(img_with_camera['dense_mediapipe_landmarks'])
-                        color_camera_dense_mediapipe_landmarks_augmented.append(img_with_camera['dense_mediapipe_landmarks_augmented'])
-
-                    # MediaPipe landmarks collected if present
-                    if 'landmarks_mediapipe' in img_with_camera:
-                        if 'color_camera_landmarks_mediapipe' not in locals():
-                            color_camera_landmarks_mediapipe = []
-                            color_camera_landmarks_mediapipe_augmented = []
-                        color_camera_landmarks_mediapipe.append(img_with_camera['landmarks_mediapipe'])
-                        color_camera_landmarks_mediapipe_augmented.append(img_with_camera['landmarks_mediapipe_augmented'])
-
-                    if img_with_camera['normals_image'] is not None:
-                        color_images_normals.append(img_with_camera['normals_image'])
-                        color_images_normals_augmented.append(img_with_camera['normals_image_augmented'])
-                        
-
-                    # color_camera_landmarks_masks.append(torch.from_numpy(fan_landmarks_scores_masks['mask']))
-                    if img_with_camera['depth_map'] is not None:
-                        color_images_depth.append(img_with_camera['depth_map'])
-                        color_images_depth_augmented.append(img_with_camera['depth_map_augmented'])
-
-                    if img_with_camera['landmarks_hull_mask'] is not None:                    
-                        color_camera_landmarks_hull_masks.append(img_with_camera['landmarks_hull_mask'])
-                        color_camera_landmarks_hull_masks_augmented.append(img_with_camera['landmarks_hull_mask_augmented'])
-
-                    if fan_landmarks is not None:
-                        color_camera_landmarks_masks.append(fan_landmarks_mask)
-                        color_camera_landmarks_masks_augmented.append(fan_landmarks_mask)
-
-                    # MediaPipe simple masks (1 if non-degenerate else 0)
-                    if mp_landmarks_view is not None:
-                        if 'color_camera_landmarks_mediapipe_masks' not in locals():
-                            color_camera_landmarks_mediapipe_masks = []
-                            color_camera_landmarks_mediapipe_masks_augmented = []
-                        color_camera_landmarks_mediapipe_masks.append(mediapipe_landmarks_mask)
-                        color_camera_landmarks_mediapipe_masks_augmented.append(mediapipe_landmarks_mask)
-
-
-                # else:
-                #     stereo_images.append(img_with_camera['image'])
-                #     stereo_camera_intrinsics.append(img_with_camera['intrinsics'])
-                #     stereo_camera_extrinsics.append(img_with_camera['extrinsics'])
-                #     stereo_camera_distortions.append(img_with_camera['radial_distortion'])   
-                #     stereo_camera_centers.append(img_with_camera['camera_center'])         
-                #     stereo_images_augmented.append(img_with_camera['image_augmented'])
-                #     stereo_camera_intrinsics_augmented.append(img_with_camera['intrinsics_augmented'])                    
-                #     # stereo_camera_landmarks.append(img_with_camera['landmarks'])
-                #     # stereo_camera_landmarks_augmented.append(img_with_camera['landmarks_augmented'])
-                #     stereo_camera_landmarks_masks.append(landmarks_mask)
-                #     camera_names.append(get_filename(calib_fname))
-
-                #     if img_with_camera['landmarks'] is not None:
-                #         stereo_camera_landmarks.append(img_with_camera['landmarks'])
-                #         stereo_camera_landmarks_augmented.append(img_with_camera['landmarks_augmented'])
-
-                #     if img_with_camera['normals_image'] is not None:
-                #         stereo_images_normals.append(img_with_camera['normals_image'])
-                #         stereo_images_normals_augmented.append(img_with_camera['normals_image_augmented'])
-
-
-        # --------------- View-dropout: randomly omit entire views ---------------- #
-        # kept = []
-        # for i in range(len(color_images)):
-        #     if random.random() > self.view_drop_prob:
-        #         kept.append(i)
-        # if len(kept) == 0 and len(color_images) > 0:
-        #     kept = [random.randrange(len(color_images))]
-        # kept = random.sample(range(len(color_images)), len(color_images)//2)
-        # kept = range(len(color_images)) # do not drop any views
-
-        # color_images = [color_images[i] for i in kept]
-        # color_camera_intrinsics = [color_camera_intrinsics[i] for i in kept]
-        # color_camera_extrinsics = [color_camera_extrinsics[i] for i in kept]
-        # color_camera_distortions = [color_camera_distortions[i] for i in kept]
-        # color_camera_centers = [color_camera_centers[i] for i in kept]
-        # color_images_augmented = [color_images_augmented[i] for i in kept]
-        # color_camera_intrinsics_augmented = [color_camera_intrinsics_augmented[i] for i in kept]
-        # color_images_normals = [color_images_normals[i] for i in kept] if len(color_images_normals) > 0 else []
-        # color_images_normals_augmented = [color_images_normals_augmented[i] for i in kept] if len(color_images_normals_augmented) > 0 else []
-
-
-        # # print(len(color_images), len(color_camera_intrinsics))
-        # # raise
-        # if len(stereo_images) > 0:
-        #     stereo_images = torch.stack(stereo_images, dim=0)
-        #     stereo_camera_intrinsics = torch.stack(stereo_camera_intrinsics, dim=0)
-        #     stereo_camera_extrinsics = torch.stack(stereo_camera_extrinsics, dim=0)
-        #     stereo_camera_distortions = torch.stack(stereo_camera_distortions, dim=0)
-        #     stereo_camera_centers = torch.stack(stereo_camera_centers, dim=0)
-        #     stereo_images_augmented = torch.stack(stereo_images_augmented, dim=0)
-        #     stereo_camera_intrinsics_augmented = torch.stack(stereo_camera_intrinsics_augmented, dim=0)
-        #     # stereo_camera_landmarks = torch.stack(stereo_camera_landmarks, dim=0)
-        #     # stereo_camera_landmarks_augmented = torch.stack(stereo_camera_landmarks_augmented, dim=0)
-        #     # stereo_camera_landmarks_masks = torch.stack(stereo_camera_landmarks_masks, dim=0)
-        #     stereo_camera_landmarks = torch.stack(stereo_camera_landmarks, dim=0) if len(stereo_camera_landmarks) > 0 else None
-        #     stereo_camera_landmarks_augmented = torch.stack(stereo_camera_landmarks_augmented, dim=0) if len(stereo_camera_landmarks_augmented) > 0 else None
-
-        #     stereo_images_normals = torch.stack(stereo_images_normals, dim=0) if len(stereo_images_normals) > 0 else None
-        #     stereo_images_normals_augmented = torch.stack(stereo_images_normals_augmented, dim=0) if len(stereo_images_normals_augmented) > 0 else None
+                if img_with_camera['depth_map'] is not None:
+                    color_images_depth.append(img_with_camera['depth_map'])
+                    color_images_depth_augmented.append(img_with_camera['depth_map_augmented'])
 
         if len(color_images) > 0:
             color_images = torch.stack(color_images, dim=0)
@@ -608,25 +371,13 @@ class FaceAlignDatasetMPI(data.Dataset):
             color_images_augmented = torch.stack(color_images_augmented, dim=0)
             color_camera_intrinsics_augmented = torch.stack(color_camera_intrinsics_augmented, dim=0)
 
-            if len(color_camera_landmarks) > 0:
-                color_camera_landmarks = torch.stack(color_camera_landmarks, dim=0)
-                color_camera_landmarks_augmented = torch.stack(color_camera_landmarks_augmented, dim=0)
-
             if len(color_camera_dense_landmarks) > 0:
                 color_images_normals = torch.stack(color_images_normals, dim=0) if len(color_images_normals) > 0 else None
                 color_images_normals_augmented = torch.stack(color_images_normals_augmented, dim=0) if len(color_images_normals_augmented) > 0 else None
 
-
             if len(color_images_depth) > 0:
                 color_images_depth = torch.stack(color_images_depth, dim=0) if len(color_images_depth) > 0 else None
                 color_images_depth_augmented = torch.stack(color_images_depth_augmented, dim=0) if len(color_images_depth_augmented) > 0 else None
-
-
-            if len(color_camera_landmarks_masks) > 0:
-                color_camera_landmarks_masks = torch.stack(color_camera_landmarks_masks, dim=0) if len(color_camera_landmarks_masks) > 0 else None
-                color_camera_landmarks_hull_masks = torch.stack(color_camera_landmarks_hull_masks, dim=0) if len(color_camera_landmarks_hull_masks) > 0 else None
-                color_camera_landmarks_hull_masks_augmented = torch.stack(color_camera_landmarks_hull_masks_augmented, dim=0) if len(color_camera_landmarks_hull_masks_augmented) > 0 else None
-                color_camera_landmarks_masks_augmented = torch.stack(color_camera_landmarks_masks_augmented, dim=0) if len(color_camera_landmarks_masks_augmented) > 0 else None
 
             if len(color_camera_dense_landmarks) > 0:
                 color_camera_dense_landmarks = torch.stack(color_camera_dense_landmarks, dim=0) if len(color_camera_dense_landmarks) > 0 else None
@@ -639,62 +390,32 @@ class FaceAlignDatasetMPI(data.Dataset):
                 color_camera_dense_mediapipe_landmarks = torch.stack(color_camera_dense_mediapipe_landmarks, dim=0) if len(color_camera_dense_mediapipe_landmarks) > 0 else None
                 color_camera_dense_mediapipe_landmarks_augmented = torch.stack(color_camera_dense_mediapipe_landmarks_augmented, dim=0) if len(color_camera_dense_mediapipe_landmarks_augmented) > 0 else None
 
-            # Stack MediaPipe if present
-            if 'color_camera_landmarks_mediapipe' in locals():
-                color_camera_landmarks_mediapipe = torch.stack(color_camera_landmarks_mediapipe, dim=0)
-                color_camera_landmarks_mediapipe_augmented = torch.stack(color_camera_landmarks_mediapipe_augmented, dim=0)
-                color_camera_landmarks_mediapipe_masks = torch.stack(color_camera_landmarks_mediapipe_masks, dim=0)
-                color_camera_landmarks_mediapipe_masks_augmented = torch.stack(color_camera_landmarks_mediapipe_masks_augmented, dim=0)
-
         data = {
             # img
             'color_images': color_images,
-            'stereo_images': stereo_images,
             'color_images_augmented': color_images_augmented,
-            'stereo_images_augmented': stereo_images_augmented,
 
             # normals
             'color_images_normals': color_images_normals,
-            'stereo_images_normals': stereo_images_normals,
             'color_images_normals_augmented': color_images_normals_augmented,
-            'stereo_images_normals_augmented': stereo_images_normals_augmented,
 
             # camera
             'color_camera_intrinsics': color_camera_intrinsics,
             'color_camera_extrinsics': color_camera_extrinsics,
             'color_camera_distortions': color_camera_distortions,
             'color_camera_centers': color_camera_centers,
-            'stereo_camera_intrinsics': stereo_camera_intrinsics,
-            'stereo_camera_extrinsics': stereo_camera_extrinsics,
-            'stereo_camera_distortions': stereo_camera_distortions,
-            'stereo_camera_centers': stereo_camera_centers,
             
             'color_camera_intrinsics_augmented': color_camera_intrinsics_augmented,
-            'stereo_camera_intrinsics_augmented': stereo_camera_intrinsics_augmented,
-
-            'color_camera_landmarks': color_camera_landmarks,
-            # 'stereo_camera_landmarks': stereo_camera_landmarks,
-            'color_camera_landmarks_augmented': color_camera_landmarks_augmented,
-            # 'stereo_camera_landmarks_augmented': stereo_camera_landmarks_augmented,
 
             'color_camera_dense_landmarks': color_camera_dense_landmarks,
             'color_camera_dense_landmarks_augmented': color_camera_dense_landmarks_augmented,
-
-            'color_camera_landmarks_masks': color_camera_landmarks_masks,
-            # 'stereo_camera_landmarks_masks': stereo_camera_landmarks_masks,
 
             'color_camera_dense_landmarks_masks': color_camera_dense_landmarks_masks,
 
             'color_images_depth': color_images_depth,
             'color_images_depth_augmented': color_images_depth_augmented,
 
-            'color_camera_landmarks_masks_augmented': color_camera_landmarks_masks_augmented,
-            'color_camera_landmarks_hull_masks': color_camera_landmarks_hull_masks,
-            'color_camera_landmarks_hull_masks_augmented': color_camera_landmarks_hull_masks_augmented,
-
             'color_camera_dense_landmarks_masks_augmented': color_camera_dense_landmarks_masks_augmented,
-
-
             'color_camera_dense_fan_landmarks': color_camera_dense_fan_landmarks,
             'color_camera_dense_fan_landmarks_augmented': color_camera_dense_fan_landmarks_augmented,
             'color_camera_dense_mediapipe_landmarks': color_camera_dense_mediapipe_landmarks,
@@ -706,18 +427,7 @@ class FaceAlignDatasetMPI(data.Dataset):
             'subject': subject,
             'sequence': sequence,
             'frame': frame,   
-            # 'camera_names': camera_names
         }
-
-
-        # Attach MediaPipe landmarks if available
-        if 'color_camera_landmarks_mediapipe' in locals():
-            data.update({
-                'color_camera_landmarks_mediapipe': color_camera_landmarks_mediapipe,
-                'color_camera_landmarks_mediapipe_augmented': color_camera_landmarks_mediapipe_augmented,
-                'color_camera_landmarks_mediapipe_masks': color_camera_landmarks_mediapipe_masks,
-                'color_camera_landmarks_mediapipe_masks_augmented': color_camera_landmarks_mediapipe_masks_augmented,
-            })
 
         # remove all None values
         data = {k: v for k, v in data.items() if v is not None}
@@ -848,9 +558,7 @@ class FaceAlignDatasetMPI(data.Dataset):
         calib,
         to_meters=False,
         perturbation=None,
-        landmarks=None,          # FAN landmarks
         depth_img=None,
-        extra_landmarks=None,    # MediaPipe landmarks
         dense_landmarks=None,
         dense_fan_landmarks=None,
         dense_mediapipe_landmarks=None,
@@ -888,8 +596,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                 K=camera['intrinsics'],
                 depth=depth_img.squeeze() if depth_img is not None else None,
                 normals=normals_image,
-                landmarks=landmarks,
-                mediapipe_landmarks=extra_landmarks,  # make sure arg name matches helper
                 dense_landmarks=dense_landmarks,
                 target_size=(target_h, target_w),
                 depth_nonzero_eps=0.0,
@@ -900,8 +606,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             normals_c  = crop_res['normals_image']
             depth_c    = crop_res['depth_img']
             K_c        = crop_res['K'] if crop_res['K'] is not None else camera['intrinsics']
-            lms_c      = crop_res['landmarks'] if landmarks is not None else None
-            lms_mp_c   = crop_res['landmarks_mediapipe'] if extra_landmarks is not None else None
             lms_dense_c = crop_res['landmarks_dense'] if dense_landmarks is not None else None
 
             # 2) Random scale+crop ON the cropped tensors (output stays target_h x target_w)
@@ -914,23 +618,13 @@ class FaceAlignDatasetMPI(data.Dataset):
                 sc = scale_crop(
                     image_c, crop_size, h_offset, w_offset, scale_factor,
                     K=K_c, normals_image=normals_c, debug=False,
-                    landmarks=lms_c, depth_map=depth_c
+                    landmarks=None, depth_map=depth_c
                 )
                 image_aug_np   = sc['image']
                 K_aug_np       = sc['K'] if sc['K'] is not None else K_c
-                lms_aug_np     = sc['landmarks']
                 normals_aug_np = sc['normals_image']
                 depth_aug_np   = sc['depth_map']
 
-                # MediaPipe landmarks through same aug (no K branch)
-                lms_mp_aug_np = None
-                if lms_mp_c is not None:
-                    sc_mp = scale_crop(
-                        image_c, crop_size, h_offset, w_offset, scale_factor,
-                        K=None, normals_image=None, debug=False,
-                        landmarks=lms_mp_c, depth_map=None
-                    )
-                    lms_mp_aug_np = sc_mp['landmarks']
                 lms_dense_aug_np = None
                 if lms_dense_c is not None:
                     sc_dense = scale_crop(
@@ -943,10 +637,8 @@ class FaceAlignDatasetMPI(data.Dataset):
                 # no geometric aug
                 image_aug_np   = image_c.copy()
                 K_aug_np       = K_c.copy()
-                lms_aug_np     = lms_c.copy() if lms_c is not None else None
                 normals_aug_np = normals_c.copy() if normals_c is not None else None
                 depth_aug_np   = depth_c.copy() if depth_c is not None else None
-                lms_mp_aug_np  = lms_mp_c.copy() if lms_mp_c is not None else None
                 lms_dense_aug_np = lms_dense_c.copy() if lms_dense_c is not None else None
 
             # 3) brightness jitter AFTER geometry
@@ -956,23 +648,11 @@ class FaceAlignDatasetMPI(data.Dataset):
                 perturb = perturbation
             image_aug_np = np.clip(image_aug_np * perturb, 0.0, 1.0)
 
-            # 4) convex hull masks (base & augmented)
-            lm_mask      = np.zeros((target_h, target_w), dtype=np.uint8)
-            lm_mask_aug  = np.zeros((target_h, target_w), dtype=np.uint8)
-            if lms_c is not None and lms_c.shape[0] > 2:
-                hull = cv2.convexHull(lms_c[:, :2].astype(np.int32))
-                cv2.fillConvexPoly(lm_mask, hull, 1)
-            if lms_aug_np is not None and lms_aug_np.shape[0] > 2:
-                hull = cv2.convexHull(lms_aug_np[:, :2].astype(np.int32))
-                cv2.fillConvexPoly(lm_mask_aug, hull, 1)
-            lm_mask     = torch.from_numpy(lm_mask.astype(bool))
-            lm_mask_aug = torch.from_numpy(lm_mask_aug.astype(bool))
-
-            # 5) normalize RGB to your stats
+            # 4) normalize RGB to your stats
             image_c_norm   = self.normalize_image(image_c)
             image_aug_norm = self.normalize_image(image_aug_np)
 
-            # 6) pack tensors (NO image_resize_factor here — fixed output size has priority)
+            # 5) pack tensors (NO image_resize_factor here — fixed output size has priority)
             image_t          = torch.from_numpy(image_c_norm.astype(np.float32)).permute(2, 0, 1).contiguous()
             image_aug_t      = torch.from_numpy(image_aug_norm.astype(np.float32)).permute(2, 0, 1).contiguous()
             intrinsics_t     = torch.from_numpy(K_c.astype(np.float32))
@@ -987,10 +667,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             depth_t          = torch.from_numpy(depth_c.astype(np.float32))[:, :, None] if depth_c is not None else None
             depth_aug_t      = torch.from_numpy(depth_aug_np.astype(np.float32))[:, :, None] if depth_aug_np is not None else depth_t
 
-            lms_t            = torch.from_numpy(lms_c.astype(np.float32)) if lms_c is not None else None
-            lms_aug_t        = torch.from_numpy(lms_aug_np.astype(np.float32)) if lms_aug_np is not None else lms_t
-            lms_mp_t         = torch.from_numpy(lms_mp_c.astype(np.float32)) if lms_mp_c is not None else None
-            lms_mp_aug_t     = torch.from_numpy(lms_mp_aug_np.astype(np.float32)) if lms_mp_aug_np is not None else lms_mp_t
             lms_dense_t      = torch.from_numpy(lms_dense_c.astype(np.float32)) if lms_dense_c is not None else None
             lms_dense_aug_t  = torch.from_numpy(lms_dense_aug_np.astype(np.float32)) if lms_dense_aug_np is not None else lms_dense_t
 
@@ -1006,14 +682,8 @@ class FaceAlignDatasetMPI(data.Dataset):
                 'normals_image_augmented': normals_aug_t,
                 'depth_map': depth_t,
                 'depth_map_augmented': depth_aug_t,
-                'landmarks': lms_t,
-                'landmarks_augmented': lms_aug_t,
-                'landmarks_mediapipe': lms_mp_t,
-                'landmarks_mediapipe_augmented': lms_mp_aug_t,
                 'dense_landmarks': lms_dense_t,
                 'dense_landmarks_augmented': lms_dense_aug_t,
-                'landmarks_hull_mask': lm_mask,
-                'landmarks_hull_mask_augmented': lm_mask_aug,
                 'perturbation': perturb,
             }
             return out
@@ -1033,23 +703,12 @@ class FaceAlignDatasetMPI(data.Dataset):
             sc = scale_crop(
                 image, crop_size, h_offset, w_offset, scale_factor,
                 K=camera['intrinsics'], normals_image=normals_image, debug=False,
-                debug_root='debug_/', landmarks=landmarks, depth_map=depth_img
+                debug_root='debug_/', landmarks=None, depth_map=depth_img
             )
             image_augmented = sc['image']
             intrinsics_augmented = sc['K']
-            landmarks_augmented = sc['landmarks']
             normals_augmented = sc['normals_image']
             depth_augmented = sc['depth_map']
-
-            # MediaPipe landmarks: same aug params (no K)
-            landmarks_mediapipe_augmented = None
-            if extra_landmarks is not None:
-                sc_mp = scale_crop(
-                    image, crop_size, h_offset, w_offset, scale_factor,
-                    K=None, normals_image=None, debug=False, debug_root=None,
-                    landmarks=extra_landmarks, depth_map=None
-                )
-                landmarks_mediapipe_augmented = sc_mp['landmarks']
 
             dense_landmarks_augmented = None
             if dense_landmarks is not None:
@@ -1082,9 +741,7 @@ class FaceAlignDatasetMPI(data.Dataset):
             image_augmented = image.copy()
             intrinsics_augmented = camera['intrinsics'].copy()
             normals_augmented = normals_image.copy() if normals_image is not None else None
-            landmarks_augmented = landmarks.copy() if landmarks is not None else None
             depth_augmented = depth_img.copy() if depth_img is not None else None
-            landmarks_mediapipe_augmented = extra_landmarks.copy() if extra_landmarks is not None else None
             dense_landmarks_augmented = dense_landmarks.copy() if dense_landmarks is not None else None
             dense_mediapipe_landmarks_augmented = dense_mediapipe_landmarks.copy() if dense_mediapipe_landmarks is not None else None
             dense_fan_landmarks_augmented = dense_fan_landmarks.copy() if dense_fan_landmarks is not None else None
@@ -1095,22 +752,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         else:
             perturb = perturbation
         image_augmented = np.clip(image_augmented * perturb, 0.0, 1.0)
-
-        # convex hull masks (base & augmented)
-        h_aug, w_aug = image_augmented.shape[:2]
-        landmark_mask_augmented = np.zeros((h_aug, w_aug), dtype=np.uint8)
-        if landmarks_augmented is not None and landmarks_augmented.shape[0] > 2:
-            pts = landmarks_augmented[:, :2].astype(np.int32)
-            hull = cv2.convexHull(pts)
-            cv2.fillConvexPoly(landmark_mask_augmented, hull, 1)
-        landmark_mask_augmented = torch.from_numpy(landmark_mask_augmented.astype(bool))
-
-        landmark_mask = np.zeros((h, w), dtype=np.uint8)
-        if landmarks is not None and landmarks.shape[0] > 2:
-            pts = landmarks[:, :2].astype(np.int32)
-            hull = cv2.convexHull(pts)
-            cv2.fillConvexPoly(landmark_mask, hull, 1)
-        landmark_mask = torch.from_numpy(landmark_mask.astype(bool))
 
         # normalize RGB to your stats
         image_norm = self.normalize_image(image)
@@ -1142,19 +783,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             camera['intrinsics'][1, :] /= self.image_resize_factor
             intrinsics_augmented /= self.image_resize_factor
 
-            # adjust landmarks
-            if landmarks is not None:
-                landmarks[:, 0] /= self.image_resize_factor
-                landmarks[:, 1] /= self.image_resize_factor
-            if landmarks_augmented is not None:
-                landmarks_augmented[:, 0] /= self.image_resize_factor
-                landmarks_augmented[:, 1] /= self.image_resize_factor
-            if extra_landmarks is not None:
-                extra_landmarks[:, 0] /= self.image_resize_factor
-                extra_landmarks[:, 1] /= self.image_resize_factor
-            if landmarks_mediapipe_augmented is not None:
-                landmarks_mediapipe_augmented[:, 0] /= self.image_resize_factor
-                landmarks_mediapipe_augmented[:, 1] /= self.image_resize_factor
             if dense_landmarks is not None:
                 dense_landmarks[:, 0] /= self.image_resize_factor
                 dense_landmarks[:, 1] /= self.image_resize_factor
@@ -1182,10 +810,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         radial_t = torch.from_numpy(camera['radial_distortion'].astype(np.float32))
         center_t = torch.from_numpy(camera['camera_center'].astype(np.float32))
 
-        landmarks_t = torch.from_numpy(landmarks.astype(np.float32)) if landmarks is not None else None
-        landmarks_aug_t = torch.from_numpy(landmarks_augmented.astype(np.float32)) if landmarks_augmented is not None else None
-        landmarks_mediapipe_t = torch.from_numpy(extra_landmarks.astype(np.float32)) if extra_landmarks is not None else None
-        landmarks_mediapipe_aug_t = torch.from_numpy(landmarks_mediapipe_augmented.astype(np.float32)) if landmarks_mediapipe_augmented is not None else None
         dense_landmarks_t = torch.from_numpy(dense_landmarks.astype(np.float32)) if dense_landmarks is not None else None
         dense_landmarks_aug_t = torch.from_numpy(dense_landmarks_augmented.astype(np.float32)) if dense_landmarks_augmented is not None else dense_landmarks_t
         dense_fan_landmarks_t = torch.from_numpy(dense_fan_landmarks.astype(np.float32)) if dense_fan_landmarks is not None else None
@@ -1218,21 +842,9 @@ class FaceAlignDatasetMPI(data.Dataset):
             'normals_image_augmented': normals_aug_t,
 
             'perturbation': perturb,
-            'landmarks': landmarks_t,
-            'landmarks_augmented': landmarks_aug_t,
-
             'depth_map_augmented': depth_aug_t,
             'depth_map': depth_img_t,
-
-            'landmarks_hull_mask': landmark_mask,
-            'landmarks_hull_mask_augmented': landmark_mask_augmented,
         }
-
-        if landmarks_mediapipe_t is not None:
-            out.update({
-                'landmarks_mediapipe': landmarks_mediapipe_t,
-                'landmarks_mediapipe_augmented': landmarks_mediapipe_aug_t,
-            })
 
         if dense_landmarks_t is not None:
             out.update({
@@ -1285,18 +897,11 @@ class FaceAlignDatasetMPI(data.Dataset):
                 return image * self.std.view(1,3,1,1).to(image.device) + self.mean.view(1,3,1,1).to(image.device)
         else:
             raise RuntimeError(f"unrecognizable image type {type(image)}")
-
-
-import numpy as np
-import cv2
-
 def crop_square_by_depth_and_update_K(
     img,
     K=None,
     depth=None,
     normals=None,
-    landmarks=None,
-    mediapipe_landmarks=None,
     dense_landmarks=None,
     target_size=(308, 308),      # (H, W) — can be rectangular; square recommended
     depth_nonzero_eps=0.0,       # treat values > eps as valid depth
@@ -1314,7 +919,6 @@ def crop_square_by_depth_and_update_K(
           'normals_image': np.ndarray(Ht, Wt, C) or None,
           'depth_img': np.ndarray(Ht, Wt) or None,
           'K': np.ndarray(3,3) or None,
-          'landmarks': np.ndarray(N,2) or None,
           'transform': np.ndarray(3,3)  # pixel homography U applied to go img->cropped
         }
     """
@@ -1397,26 +1001,6 @@ def crop_square_by_depth_and_update_K(
                                    borderValue=border_value_depth)
 
     # ---------- 5) transform landmarks ----------
-    landmarks_out = None
-    if landmarks is not None:
-        if landmarks.shape[1] == 2:
-            ones = np.ones((landmarks.shape[0], 1), dtype=landmarks.dtype)
-            P = np.hstack([landmarks, ones])        # Nx3
-            Pp = (U @ P.T).T                         # Nx3
-            landmarks_out = Pp[:, :2]
-        else:
-            raise ValueError("landmarks must be (N,2)")
-
-    landmarks_mediapipe_out = None
-    if mediapipe_landmarks is not None:
-        if mediapipe_landmarks.shape[1] == 2:
-            ones = np.ones((mediapipe_landmarks.shape[0], 1), dtype=mediapipe_landmarks.dtype)
-            P = np.hstack([mediapipe_landmarks, ones])        # Nx3
-            Pp = (U @ P.T).T                         # Nx3
-            landmarks_mediapipe_out = Pp[:, :2]
-        else:
-            raise ValueError("mediapipe_landmarks must be (N,2)")
-
     landmarks_dense_out = None
     if dense_landmarks is not None:
         if dense_landmarks.shape[1] == 2:
@@ -1438,8 +1022,6 @@ def crop_square_by_depth_and_update_K(
         'normals_image': normals_out,
         'depth_img': depth_out,
         'K': K_out if K is not None else None,
-        'landmarks': landmarks_out,
         'transform': U,
-        'landmarks_mediapipe': landmarks_mediapipe_out,
         'landmarks_dense': landmarks_dense_out
     }

@@ -74,9 +74,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                 scale_max=1.1,
                 brightness_sigma=0.1 / 3.0, # random brightness perturbation  
                 scan_vertex_count=10000,
-                # parameters to specify the type of images being loaded
-                load_stereo_images=True,
-                load_color_images=False,
                 calibration_blacklist=[],
                 image_file_ext='png',
                 fan_landmarks_dir='',
@@ -95,8 +92,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             raise RuntimeError('Invalid data path - %s' % data_list_fname)
         print()
         # self.split_list = self.split_list[100:102]
-        self.load_stereo_images = load_stereo_images
-        self.load_color_images = load_color_images
         self.calibration_blacklist = calibration_blacklist
         self.return_full_scan = return_full_scan
 
@@ -220,7 +215,7 @@ class FaceAlignDatasetMPI(data.Dataset):
         # print('Num calib fnames: %d' % len(calib_fnames))
         # print(calib_fnames)
 
-        # Read stereo and color images for each calibration file
+        # Read color images for each calibration file
         color_images = []
         color_images_normals = []
         color_camera_intrinsics = []
@@ -231,55 +226,30 @@ class FaceAlignDatasetMPI(data.Dataset):
         color_images_normals_augmented = []
         color_camera_intrinsics_augmented = []
 
-        stereo_images = []
-        stereo_images_normals = []
-        stereo_camera_intrinsics = []
-        stereo_camera_extrinsics = []
-        stereo_camera_distortions = []
-        stereo_camera_centers = []
-        stereo_images_augmented = []
-        stereo_images_normals_augmented = []
-        stereo_camera_intrinsics_augmented = []
-
         color_camera_landmarks = []
-        stereo_camera_landmarks = []
         color_camera_landmarks_augmented = []
-        stereo_camera_landmarks_augmented = []
 
         color_camera_landmarks_masks = []
-        stereo_camera_landmarks_masks = []
 
         color_camera_dense_landmarks = []
-        stereo_camera_dense_landmarks = []
         color_camera_dense_landmarks_augmented = []
-        stereo_camera_dense_landmarks_augmented = []
 
         # mediapipe landmarks (mirroring FAN landmarks API)
         color_camera_mediapipe_landmarks = []
-        stereo_camera_mediapipe_landmarks = []
         color_camera_mediapipe_landmarks_augmented = []
-        stereo_camera_mediapipe_landmarks_augmented = []
 
         color_camera_mediapipe_landmarks_masks = []
-        stereo_camera_mediapipe_landmarks_masks = []
 
         # segmentation maps per view (optional)
         color_segmentation_maps = []
         color_segmentation_maps_augmented = []
-        stereo_segmentation_maps = []
-        stereo_segmentation_maps_augmented = []
 
         camera_names =[]
 
         frame_grid = None
         intrinsics_grid = None
 
-        if not self.load_stereo_images and not self.load_color_images:
-            raise RuntimeError('No images to load - set load_stereo_images or load_color_images to True')
-        if not self.load_stereo_images and self.load_color_images:
-            calib_fnames = [f for f in calib_fnames if '_C' in get_filename(f)]
-        if not self.load_color_images and self.load_stereo_images:
-            calib_fnames = [f for f in calib_fnames if '_A' in get_filename(f) or '_B' in get_filename(f)]
+        calib_fnames = [f for f in calib_fnames if '_C' in get_filename(f)]
         
         if len(calib_fnames) == 0:
             raise RuntimeError('No calibration files found for subject %s, sequence %s, frame %s' % (subject, sequence, frame))
@@ -287,10 +257,6 @@ class FaceAlignDatasetMPI(data.Dataset):
 
         for i,calib_fname in enumerate(calib_fnames):
             # print('Process calib fname %s' % calib_fname)
-            if (not self.load_stereo_images) and ('_A' in get_filename(calib_fname) or '_B' in get_filename(calib_fname)):
-                continue
-            if (not self.load_color_images) and ('_C' in get_filename(calib_fname)):
-                continue
             if get_filename(calib_fname) in self.calibration_blacklist:
                 continue
             
@@ -422,86 +388,7 @@ class FaceAlignDatasetMPI(data.Dataset):
                         color_segmentation_maps.append(img_with_camera['segmentation_map'].numpy()) if isinstance(img_with_camera['segmentation_map'], torch.Tensor) else color_segmentation_maps.append(img_with_camera['segmentation_map'])
                         if img_with_camera.get('segmentation_map_augmented', None) is not None:
                             color_segmentation_maps_augmented.append(img_with_camera['segmentation_map_augmented'].numpy()) if isinstance(img_with_camera['segmentation_map_augmented'], torch.Tensor) else color_segmentation_maps_augmented.append(img_with_camera['segmentation_map_augmented'])
-                else:
-                    stereo_images.append(img_with_camera['image'])
-                    stereo_camera_intrinsics.append(img_with_camera['intrinsics'])
-                    stereo_camera_extrinsics.append(img_with_camera['extrinsics'])
-                    stereo_camera_distortions.append(img_with_camera['radial_distortion'])   
-                    stereo_camera_centers.append(img_with_camera['camera_center'])         
-                    stereo_images_augmented.append(img_with_camera['image_augmented'])
-                    stereo_camera_intrinsics_augmented.append(img_with_camera['intrinsics_augmented'])                    
-                    # stereo_camera_landmarks.append(img_with_camera['landmarks'])
-                    # stereo_camera_landmarks_augmented.append(img_with_camera['landmarks_augmented'])
-                    stereo_camera_landmarks_masks.append(landmarks_mask)
-                    stereo_camera_mediapipe_landmarks_masks.append(mp_landmarks_mask)
-                    camera_names.append(get_filename(calib_fname))
-
-                    if img_with_camera['landmarks'] is not None:
-                        stereo_camera_landmarks.append(img_with_camera['landmarks'])
-                        stereo_camera_landmarks_augmented.append(img_with_camera['landmarks_augmented'])
-
-                    if img_with_camera.get('mediapipe_landmarks', None) is not None:
-                        stereo_camera_mediapipe_landmarks.append(img_with_camera['mediapipe_landmarks'])
-                        stereo_camera_mediapipe_landmarks_augmented.append(img_with_camera['mediapipe_landmarks_augmented'])
-
-                    if img_with_camera.get('dense_landmarks', None) is not None:
-                        # print('dense landmarks shape:', img_with_camera['dense_landmarks'].shape)
-                        stereo_camera_dense_landmarks.append(img_with_camera['dense_landmarks'])
-                        stereo_camera_dense_landmarks_augmented.append(img_with_camera['dense_landmarks_augmented'])
-
-                    if img_with_camera['normals_image'] is not None:
-                        stereo_images_normals.append(img_with_camera['normals_image'])
-                        stereo_images_normals_augmented.append(img_with_camera['normals_image_augmented'])
-
-                    if img_with_camera.get('segmentation_map', None) is not None:
-                        stereo_segmentation_maps.append(img_with_camera['segmentation_map'].numpy()) if isinstance(img_with_camera['segmentation_map'], torch.Tensor) else stereo_segmentation_maps.append(img_with_camera['segmentation_map'])
-                        if img_with_camera.get('segmentation_map_augmented', None) is not None:
-                            stereo_segmentation_maps_augmented.append(img_with_camera['segmentation_map_augmented'].numpy()) if isinstance(img_with_camera['segmentation_map_augmented'], torch.Tensor) else stereo_segmentation_maps_augmented.append(img_with_camera['segmentation_map_augmented'])
-
-    
         color_camera_landmarks_masks = torch.from_numpy(np.array(color_camera_landmarks_masks)).int()
-        stereo_camera_landmarks_masks = torch.from_numpy(np.array(stereo_camera_landmarks_masks)).int()
-        # print(stereo_camera_landmarks_masks)
-
-        if len(stereo_images) > 0:
-            stereo_images = torch.stack(stereo_images, dim=0)
-            stereo_camera_intrinsics = torch.stack(stereo_camera_intrinsics, dim=0)
-            stereo_camera_extrinsics = torch.stack(stereo_camera_extrinsics, dim=0)
-            stereo_camera_distortions = torch.stack(stereo_camera_distortions, dim=0)
-            stereo_camera_centers = torch.stack(stereo_camera_centers, dim=0)
-            stereo_images_augmented = torch.stack(stereo_images_augmented, dim=0)
-            stereo_camera_intrinsics_augmented = torch.stack(stereo_camera_intrinsics_augmented, dim=0)
-            # stereo_camera_landmarks = torch.stack(stereo_camera_landmarks, dim=0)
-            # stereo_camera_landmarks_augmented = torch.stack(stereo_camera_landmarks_augmented, dim=0)
-            # stereo_camera_landmarks_masks = torch.stack(stereo_camera_landmarks_masks, dim=0)
-            stereo_camera_landmarks = torch.stack(stereo_camera_landmarks, dim=0) if len(stereo_camera_landmarks) > 0 else None
-            stereo_camera_landmarks_augmented = torch.stack(stereo_camera_landmarks_augmented, dim=0) if len(stereo_camera_landmarks_augmented) > 0 else None
-
-            stereo_camera_mediapipe_landmarks = torch.stack(stereo_camera_mediapipe_landmarks, dim=0) if len(stereo_camera_mediapipe_landmarks) > 0 else None
-            stereo_camera_mediapipe_landmarks_augmented = torch.stack(stereo_camera_mediapipe_landmarks_augmented, dim=0) if len(stereo_camera_mediapipe_landmarks_augmented) > 0 else None
-
-            stereo_camera_dense_landmarks = torch.stack(stereo_camera_dense_landmarks, dim=0) if len(stereo_camera_dense_landmarks) > 0 else None
-            stereo_camera_dense_landmarks_augmented = torch.stack(stereo_camera_dense_landmarks_augmented, dim=0) if len(stereo_camera_dense_landmarks_augmented) > 0 else None
-
-            stereo_images_normals = torch.stack(stereo_images_normals, dim=0) if len(stereo_images_normals) > 0 else None
-            stereo_images_normals_augmented = torch.stack(stereo_images_normals_augmented, dim=0) if len(stereo_images_normals_augmented) > 0 else None
-
-            # stack segmentation maps if present
-            if len(stereo_segmentation_maps) > 0:
-                try:
-                    stereo_segmentation_maps = torch.stack([torch.from_numpy(m.astype(np.int64)) for m in stereo_segmentation_maps], dim=0)
-                except Exception as e:
-                    print('Error stacking stereo segmentation maps:', e)
-                    stereo_segmentation_maps = None
-                if len(stereo_segmentation_maps_augmented) > 0 and stereo_segmentation_maps_augmented[0] is not None:
-                    try:
-                        stereo_segmentation_maps_augmented = torch.stack([torch.from_numpy(m.astype(np.int64)) for m in stereo_segmentation_maps_augmented], dim=0)
-                    except Exception as e:
-                        print('Error stacking stereo segmentation maps augmented:', e)
-                        stereo_segmentation_maps_augmented = None
-            else:
-                stereo_segmentation_maps = None
-                stereo_segmentation_maps_augmented = None
 
         if len(color_images) > 0:
             color_images = torch.stack(color_images, dim=0)
@@ -547,53 +434,35 @@ class FaceAlignDatasetMPI(data.Dataset):
         data = {
             # img
             'color_images': color_images,
-            'stereo_images': stereo_images,
             'color_images_augmented': color_images_augmented,
-            'stereo_images_augmented': stereo_images_augmented,
 
             # normals
             'color_images_normals': color_images_normals,
-            'stereo_images_normals': stereo_images_normals,
             'color_images_normals_augmented': color_images_normals_augmented,
-            'stereo_images_normals_augmented': stereo_images_normals_augmented,
 
             # segmentation maps (labels)
             'color_segmentation_maps': color_segmentation_maps,
-            'stereo_segmentation_maps': stereo_segmentation_maps,
             'color_segmentation_maps_augmented': color_segmentation_maps_augmented,
-            'stereo_segmentation_maps_augmented': stereo_segmentation_maps_augmented,
 
             # camera
             'color_camera_intrinsics': color_camera_intrinsics,
             'color_camera_extrinsics': color_camera_extrinsics,
             'color_camera_distortions': color_camera_distortions,
             'color_camera_centers': color_camera_centers,
-            'stereo_camera_intrinsics': stereo_camera_intrinsics,
-            'stereo_camera_extrinsics': stereo_camera_extrinsics,
-            'stereo_camera_distortions': stereo_camera_distortions,
-            'stereo_camera_centers': stereo_camera_centers,
             
             'color_camera_intrinsics_augmented': color_camera_intrinsics_augmented,
-            'stereo_camera_intrinsics_augmented': stereo_camera_intrinsics_augmented,
 
             'color_camera_landmarks': color_camera_landmarks,
-            'stereo_camera_landmarks': stereo_camera_landmarks,
             'color_camera_landmarks_augmented': color_camera_landmarks_augmented,
-            'stereo_camera_landmarks_augmented': stereo_camera_landmarks_augmented,
 
             'color_camera_dense_landmarks': color_camera_dense_landmarks,
-            'stereo_camera_dense_landmarks': stereo_camera_dense_landmarks,
 
             'color_camera_landmarks_masks': color_camera_landmarks_masks,
-            'stereo_camera_landmarks_masks': stereo_camera_landmarks_masks,
 
             # mediapipe landmarks
             'color_camera_mediapipe_landmarks': color_camera_mediapipe_landmarks,
-            'stereo_camera_mediapipe_landmarks': stereo_camera_mediapipe_landmarks,
             'color_camera_mediapipe_landmarks_augmented': color_camera_mediapipe_landmarks_augmented,
-            'stereo_camera_mediapipe_landmarks_augmented': stereo_camera_mediapipe_landmarks_augmented,
             'color_camera_mediapipe_landmarks_masks': torch.from_numpy(np.array(color_camera_mediapipe_landmarks_masks)).int(),
-            'stereo_camera_mediapipe_landmarks_masks': torch.from_numpy(np.array(stereo_camera_mediapipe_landmarks_masks)).int(),
 
             # meta
             'index': index,

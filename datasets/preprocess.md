@@ -59,15 +59,12 @@ The script writes:
 
 ```
 <OUTPUT_ROOT>/
-├── stereo_images/           # undistorted RGB grids
-├── stereo_normals/          # rendered normal-map grids
-├── stereo_depth/            # rendered depth-map grids (.npy)
-├── stereo_cameras/          # undistorted intrinsics + extrinsics + centers
-└── stereo_dense_landmarks/  # dense landmark predictions reprojected
+├── color_images/            # undistorted RGB grids
+├── color_normals/           # rendered normal-map grids
+├── color_depth/             # rendered depth-map grids (.npy)
+├── color_cameras/           # undistorted intrinsics + extrinsics + centers
+└── color_dense_landmarks/   # dense landmark predictions reprojected
 ```
-
-(The stereo* prefix is historical; the data corresponds to the
-`color_images` setup the trainer uses by default.)
 
 ## 3. Wire the trainer to your output
 
@@ -107,7 +104,6 @@ ds = FaceAlignDatasetMPI(
     depths_dir='<OUTPUT_ROOT>/color_depth',
     dense_landmarks_dir='<OUTPUT_ROOT>/color_dense_landmarks',
     image_resize_factor=2,
-    load_color_images=True,
     image_file_ext='png',
 )
 print('dataset size:', len(ds))

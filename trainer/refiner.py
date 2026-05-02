@@ -9,12 +9,10 @@ import numpy as np
 from torch.autograd import Variable
 from utils.utils import print_memory, to_numpy, get_time_string, add_labels_to_images
 from utils.mesh_renderer import render_mesh, dist_to_rgb
-from utils.data_augment import get_subset_views
 from utils.point_to_point_loss import PointToPointLoss
 from utils.point_to_surface_loss import PointToSurfaceLoss, compute_s2m_distance, GMO, batch_chamfer_distance
 from utils.edge_loss import EdgeLoss
 from utils.mesh_helper import MeshHelper, pointmap_to_rgb, depth_to_pointmap_robust
-from kaolin.metrics.trianglemesh import uniform_laplacian_smoothing
 from trainer.base_trainer import BaseTrainer
 from option_handler.train_options_global import TrainOptions
 from psbody.mesh import Mesh
@@ -66,12 +64,8 @@ class Trainer(BaseTrainer):
             self.args.global_origin = [x/self.unit_factor for x in self.args.global_origin]
 
 
-        if self.args.input_image_type == 'color_images':
-            self.rotated_views_global = [6, 7]  # hardcoded for 8-view setup
-            self.non_rotated_views_global = [i for i in range(8) if i not in self.rotated_views_global]
-        elif self.args.input_image_type == 'stereo_images':
-            self.rotated_views_global = [12, 13, 14, 15]  # no rotated views in stereo setup
-            self.non_rotated_views_global = [i for i in range(16) if i not in self.rotated_views_global]
+        self.rotated_views_global = [6, 7]  # hardcoded for 8-view setup
+        self.non_rotated_views_global = [i for i in range(8) if i not in self.rotated_views_global]
             
             
         self.dense_landmarks_weights_mask = torch.zeros((5023,), dtype=torch.float32).to(self.device)
@@ -262,11 +256,7 @@ class Trainer(BaseTrainer):
             mesh_sampler=None,
             scan_vertex_count=self.args.scan_vertex_count,
             brightness_sigma=self.args.brightness_sigma,
-            load_stereo_images=self.args.input_image_type == 'stereo_images',
-            load_color_images=self.args.input_image_type == 'color_images',
             image_file_ext=self.args.image_file_ext,
-            fan_landmarks_dir='',
-            mediapipe_landmarks_dir='',
             dense_landmarks_dir=self.args.dense_landmarks_dir,
             dense_semantic_landmarks_dir=self.args.dense_semantic_landmarks_dir,
             normals_dir=self.args.normals_image_directory,
@@ -338,13 +328,7 @@ class Trainer(BaseTrainer):
         self.current_sequences = data['sequence']
         self.current_frames = data['frame']
 
-        if self.args.input_image_type == 'stereo_images':
-            if self.args.sample_views and self.model.training:
-                views = get_subset_views(number_views, minimum_views=self.args.minimum_sample_views)
-            else:
-                views = np.arange(number_views)
-        else:
-            views = np.arange(number_views)
+        views = np.arange(number_views)
 
         # positions in the subsampled 'views' array
         self.rotated_views = [i for i, v in enumerate(views) if v in self.rotated_views_global]
@@ -580,7 +564,6 @@ class Trainer(BaseTrainer):
         if target_vertices is None:
             registrations_are_here = True
             print('Using self.target_vertices for vertex losses computation')
-            print('Current weight for points and edge and laplacian:', self.args.weight_points_recon, self.args.weight_edge_regularizer, self.args.weight_laplacian_smoothing)
             target_vertices = self.target_vertices
 
         # Points reconstruction loss
@@ -597,12 +580,6 @@ class Trainer(BaseTrainer):
         else:
             losses[f'edge_regularizer_loss{suffix}'] = 0.0
         
-        # Laplacian smoothing loss
-        smoothed_vertices = uniform_laplacian_smoothing(vertices, self.faces.to(self.device))
-        laplacian_coords = vertices - smoothed_vertices
-        laplacian_loss = laplacian_coords.pow(2).mean() * self.args.weight_laplacian_smoothing
-        losses[f'laplacian_smoothing_loss{suffix}'] = laplacian_loss
-
         points2surface_loss = self.args.weight_points2surface * self._points2surface_loss_for_vertices(vertices)
         losses['points2surface_loss' + suffix] = points2surface_loss
 
@@ -1202,14 +1179,6 @@ class Trainer(BaseTrainer):
             
 
         
-        if getattr(self.args, 'enable_virtual_views_loss', False):
-            vv_loss, vv_pred = self.compute_virtual_views_loss(self.global_points)
-        # print(vv_loss)
-        # self.losses['virtual_views_loss'] = vv_loss
-            for k, v in vv_pred.items(): setattr(self, k, v)  # optional (for visualize)
-            all_losses['virtual_views_loss'] = vv_loss
-
-
         # ---------- PLIKS ---------- #
         beta_reg = torch.tensor(0.0, device=self.device)
         exp_reg  = torch.tensor(0.0, device=self.device)
@@ -1401,14 +1370,11 @@ class Trainer(BaseTrainer):
         self.smirk_loss = all_losses.get('smirk_loss', 0.0)
         self.smirk_loss_l1 = all_losses.get('smirk_loss_l1', 0.0)
         self.smirk_loss_vgg = all_losses.get('smirk_loss_vgg', 0.0)
-        self.laplacian_smoothing_loss = all_losses.get('laplacian_smoothing_loss', 0.0)
         # self.adversarial_loss = adversarial_loss
         # self.landmarks_loss = landmarks_loss
         self.chamfer_distance = all_losses.get('chamfer_distance', 0.0)
         self.flame_regularization_loss = all_losses.get('flame_regularization_loss', 0.0)
         self.normals_grad_loss = all_losses.get('normals_grad_loss', 0.0)
-        self.virtual_views_loss = all_losses.get('virtual_views_loss', 0.0)
-        # print('asdf',self.virtual_views_loss)
 
         # Create losses dictionary for logging
         self.main_losses = {
@@ -1423,7 +1389,6 @@ class Trainer(BaseTrainer):
             'Smirk loss L1': self.smirk_loss_l1 if self.args.enable_smirk_loss else 0.0,
             'Smirk loss VGG': self.smirk_loss_vgg if self.args.enable_smirk_loss else 0.0,
             'Identity loss': all_losses.get('identity_loss', 0.0) if getattr(self.args, 'enable_arcface_loss', False) else 0.0,
-            'Laplacian smoothing loss': self.laplacian_smoothing_loss,
             'Landmarks loss (dense)': all_losses.get('landmarks_loss_dense', 0.0) if getattr(self, 'landmarks_dense', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
             'Landmarks loss (dense) out': all_losses.get('landmarks_loss_dense_out', 0.0) if getattr(self, 'landmarks_dense', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
             'FLAME regularization loss': self.flame_regularization_loss if self.args.enable_flame_branch else 0.0,
@@ -1434,7 +1399,6 @@ class Trainer(BaseTrainer):
             'Vertices regularizer (PLIKS)': all_losses.get('vertices_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Vertices edge regularizer (PLIKS)': all_losses.get('vertices_regularizer_pliks_edge', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Normals grad loss': self.normals_grad_loss if hasattr(self, 'normals_grad_loss') else 0.0,
-            'Virtual views loss': self.virtual_views_loss if hasattr(self, 'virtual_views_loss') else 0.0,
             'Landmarks loss (dense fan)': all_losses.get('landmarks_loss_dense_fan', 0.0), #if getattr(self, 'landmarks_dense_fan', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
             'Landmarks loss (dense fan) out': all_losses.get('landmarks_loss_dense_fan_out', 0.0), # if getattr(self, 'landmarks_dense_fan', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
             'Landmarks loss (dense mediapipe)': all_losses.get('landmarks_loss_dense_mediapipe', 0.0), # if getattr(self, 'landmarks_dense_mediapipe', None) is not None and self.args.weight_dense_landmarks > 0.0
@@ -1522,7 +1486,6 @@ class Trainer(BaseTrainer):
 
     #     if (self.global_step % self.args.visualize_frequency == 0):# and (self.global_step > 0):
     #         try:
-    #             # self.visualize_virtual_views(out_dir_suffix='vv', sample_idx=0)
 
     #             self.visualize('train')
     #         except Exception as e:
@@ -1579,7 +1542,6 @@ class Trainer(BaseTrainer):
 
     #     if (self.global_step % self.args.visualize_frequency == 0):# and (self.global_step > 0):
     #         try:
-    #             # self.visualize_virtual_views(out_dir_suffix='vv', sample_idx=0)
 
     #             self.visualize('train')
     #         except Exception as e:
@@ -2062,16 +2024,6 @@ class Trainer(BaseTrainer):
                     if self.args.wandb and idx == 0 and (self.global_step % 500 == 0):
                         wandb.log({f'{mode.capitalize()}/view_id_{view_id:02d}': wandb.Image(visualization.transpose(1, 2, 0))}, step=self.global_step)
 
-
-        # --- Virtual-views compact panels ---
-        # Only if we computed vv loss in this step (attributes present)
-        try:
-            self.visualize_virtual_views(out_dir_suffix='vv', sample_idx=0)
-        except Exception as e:
-            raise e
-            print('[visualize_virtual_views] Error:', e)
-
-
     def visualize_multiple_front(self, vertices_list, faces_list, labels, out_path=None, sample_idx=0,
                                 image_size=(800, 800), max_err_mm=3.0):
         """
@@ -2218,776 +2170,6 @@ class Trainer(BaseTrainer):
         # you can export to .obj, .glb, .gltf, etc.
         scene.export(out_fname.replace('.ply','.glb'))
 
-
-    def compute_virtual_views_loss( # experiment v2
-        self,
-        vertices_pred,
-        # zoom_range=(1.10, 1.90),   # we are training with this the local
-        zoom_range=(1.50, 3.50),   # fx, fy *= s
-        rot_deg=2.5,              # random ±rot_deg around each cam axis (cam frame)
-        weight=None
-    ):
-        import torch, math
-        device = vertices_pred.device
-        dtype  = vertices_pred.dtype
-
-        if weight is None:
-            weight = getattr(self.args, 'weight_virtual_views', 10.0)
-        if weight <= 0.0:
-            return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-        Bp, V, _ = vertices_pred.shape
-        H = int(self.inputs['images'].shape[-2])
-        W = int(self.inputs['images'].shape[-1])
-
-        K_real    = self.inputs['camera_intrinsics']   # (B_inp, N, 3, 3)
-        Extr_real = self.inputs['camera_extrinsics']   # (B_inp, N, 3, 4)
-        B_inp, N_real = K_real.shape[:2]
-
-        # batch-align
-        if B_inp != Bp:
-            rep = int((Bp + B_inp - 1) // B_inp)
-            K_real    = K_real.repeat(rep, 1, 1, 1)[:Bp]
-            Extr_real = Extr_real.repeat(rep, 1, 1, 1)[:Bp]
-
-        # drop the last two (back views)
-        keep_idx = torch.arange(max(0, N_real), device=device)
-        n_vv = keep_idx.numel()
-        if n_vv == 0:
-            return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-        Kv_all   = K_real[:, keep_idx].clone()         # (B, n_vv, 3, 3)
-        Extr_all = Extr_real[:, keep_idx].clone()      # (B, n_vv, 3, 4)
-
-        # ---- zoom intrinsics (fx, fy) ----
-        s_lo, s_hi = float(zoom_range[0]), float(zoom_range[1])
-        s = (s_lo + (s_hi - s_lo) * torch.rand(Bp, n_vv, device=device, dtype=dtype))
-        Kv_all[..., 0, 0] = Kv_all[..., 0, 0] * s
-        Kv_all[..., 0, 1] = Kv_all[..., 0, 1] * s
-        Kv_all[..., 1, 1] = Kv_all[..., 1, 1] * s
-        Kv_all[..., 1, 0] = Kv_all[..., 1, 0] * s
-        # cx, cy unchanged
-
-        # ---- small random rotation in camera frame; keep camera center fixed ----
-        # [DELETE the old R_delta-based code block entirely]
-        # R = Extr_all[..., :3]
-        # t = Extr_all[..., 3]
-        # ... ax/ay/az, R_delta, R_new, t_new ...
-
-        # ---- NEW: Dolly/orbit sampler while keeping the same look-at target ----
-        R = Extr_all[..., :3].contiguous()         # (B, n, 3, 3) world->cam
-        t = Extr_all[..., 3].contiguous()          # (B, n, 3)
-
-        # Camera center in world: C = -R^T t
-        Rt = R.transpose(-2, -1)                   # (B, n, 3, 3)
-        C = -(Rt @ t.unsqueeze(-1)).squeeze(-1)    # (B, n, 3)
-
-        # Original forward (optical axis) in world.
-        # Convention: camera looks along +Z_cam. So ez_cam = [0,0,1].
-        ez = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=dtype)
-        ez = ez.view(1, 1, 3, 1).expand(R.shape[0], R.shape[1], 3, 1)      # (B,n,3,1)
-        f0 = (Rt @ ez).squeeze(-1)                                         # (B,n,3), world forward
-        f0 = torch.nn.functional.normalize(f0, dim=-1, eps=1e-9)
-
-        # Original up in world (to preserve roll). For image coords (x right, y down),
-        # up_cam is -Y: [0,-1,0]. If your renderer uses +Y up, change to [0,1,0].
-        up_cam = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype)
-        up_cam = up_cam.view(1,1,3,1).expand(R.shape[0], R.shape[1], 3, 1)  # (B,n,3,1)
-        up0 = (Rt @ up_cam).squeeze(-1)                                     # (B,n,3), world up
-        # In case up0 ~ f0, fix degeneracy with a global up
-        global_up = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype).view(1,1,3).expand_as(up0)
-        colin = (torch.abs((up0 * f0).sum(-1)) > 0.99).unsqueeze(-1)        # (B,n,1)
-        up0 = torch.where(colin, global_up, up0)
-        up0 = torch.nn.functional.normalize(up0, dim=-1, eps=1e-9)
-
-        # Choose a gaze target G ≈ intersection of the original optical axis with the mesh region.
-        # Use predicted-vertex centroid as an anchor for depth along f0:
-        mesh_ctr = vertices_pred.mean(dim=1, keepdim=True)                  # (B,1,3)
-        mesh_ctr = mesh_ctr.expand(-1, R.shape[1], -1)                      # (B,n,3)
-        s = ((mesh_ctr - C) * f0).sum(-1, keepdim=True)                     # (B,n,1) signed distance along f0
-        G = C + s * f0                                                      # (B,n,3)
-        rad = torch.norm(C - G, dim=-1, keepdim=True).clamp_min(1e-9)  # (B,n,1)
-
-        # Build an orthonormal basis (u,v,f0) for the tangent plane around f0
-        u = torch.nn.functional.normalize(torch.cross(up0, f0, dim=-1), dim=-1, eps=1e-9)  # (B,n,3)
-        v = torch.nn.functional.normalize(torch.cross(f0,  u, dim=-1), dim=-1, eps=1e-9)   # (B,n,3)
-
-        # --- Spherical orbit around G by small angles (no K change) ---
-        max_deg = getattr(self.args, 'vv_sphere_deg', 25.0)   # e.g., up to ±8°
-        max_rad = math.radians(max_deg)
-
-        # Sample angular offsets: dtheta (elevation about v), dphi (azimuth about u)
-        dtheta = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2 - 1) * max_rad  # (-max,+max)
-        dphi   = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2 - 1) * max_rad
-
-        # Original direction from target to camera
-        dir0 = torch.nn.functional.normalize(C - G, dim=-1, eps=1e-9)  # (B,n,3)
-
-        def rodrigues(axis, angle):
-            # axis: (B,n,3), angle: (B,n)
-            a = torch.nn.functional.normalize(axis, dim=-1, eps=1e-9)
-            ax, ay, az = a[..., 0], a[..., 1], a[..., 2]
-            zeros = torch.zeros_like(ax)
-            K = torch.stack([
-                torch.stack([    zeros, -az,     ay], dim=-1),
-                torch.stack([      az, zeros,   -ax], dim=-1),
-                torch.stack([     -ay,   ax,  zeros], dim=-1),
-            ], dim=-2)  # (B,n,3,3)
-
-            c = torch.cos(angle).unsqueeze(-1).unsqueeze(-1)  # (B,n,1,1)
-            s = torch.sin(angle).unsqueeze(-1).unsqueeze(-1)
-            I = torch.eye(3, device=device, dtype=dtype).view(1,1,3,3).expand(a.shape[0], a.shape[1], 3, 3)
-            aaT = a.unsqueeze(-1) * a.unsqueeze(-2)  # (B,n,3,3)
-            return c * I + (1.0 - c) * aaT + s * K   # (B,n,3,3)
-
-        # Apply two small rotations: first around u (azimuth), then around v (elevation)
-        R_az = rodrigues(u, dphi)          # rotate around 'u'
-        R_el = rodrigues(v, dtheta)        # then around 'v'
-        R_delta = R_el @ R_az              # (B,n,3,3)
-
-        new_dir = (R_delta @ dir0.unsqueeze(-1)).squeeze(-1)         # (B,n,3)
-        new_dir = torch.nn.functional.normalize(new_dir, dim=-1, eps=1e-9)
-
-        # Keep the same radius r and target G, move camera center on the sphere
-        # C_new = G + r * new_dir  # (B,n,3)
-                                               # (B,n,3)
-        C_new = G + rad * new_dir  # (B,n,3)
-
-        # New forward to keep looking at the same G
-        f = torch.nn.functional.normalize(G - C_new, dim=-1, eps=1e-9)          # (B,n,3)
-
-        # Preserve original roll: compute right from original up0, then recompute up to be orthogonal to f
-        r = torch.nn.functional.normalize(torch.cross(up0, f, dim=-1), dim=-1, eps=1e-9)  # (B,n,3)
-        up = torch.nn.functional.normalize(torch.cross(f, r, dim=-1), dim=-1, eps=1e-9)   # (B,n,3)
-
-        # Camera-to-world (columns are axes): [r, up, f], then world->cam is transpose
-        R_c2w = torch.stack([r, up, f], dim=-1)                                   # (B,n,3,3)
-        R_new = R_c2w.transpose(-2, -1).contiguous()                              # (B,n,3,3)
-
-        # New translation: t' = -R' * C'
-        t_new = -(R_new @ C_new.unsqueeze(-1)).squeeze(-1)                        # (B,n,3)
-
-        Extr_all[..., :3] = R_new
-        Extr_all[..., 3]  = t_new
-
-
-
-        # ---- render predicted depth under (Kv_all, Extr_all) ----
-        try:
-            pred = self.mesh_helper.render_lots_of_stuff(
-                vertices_pred, Kv_all, Extr_all,
-                radial_distortions=None,
-                depth_rendering_height=H, depth_rendering_width=W,
-                return_depth=True, normalize_normals=False
-            )
-        except Exception as e:
-            print("[VV minimal] Pred rendering failed:", e)
-            return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-        depth_pred = pred['depth_images'].view(Bp, n_vv, H, W)
-
-        # ---- render scan depth (same K/Extr) ----
-        if isinstance(self.data['v_scan'], list):
-            v_list = [v.to(device=device, dtype=dtype) for v in self.data['v_scan']]
-        else:
-            v_all = self.data['v_scan'].to(device=device, dtype=dtype)
-            v_list = [v_all[i] for i in range(v_all.shape[0])]
-        if isinstance(self.data['f_scan'], list):
-            f_list = [f.to(device=device) for f in self.data['f_scan']]
-        else:
-            f_all = self.data['f_scan'].to(device=device)
-            f_list = [f_all[i] for i in range(f_all.shape[0])]
-
-        Bscan = min(len(v_list), len(f_list))
-        if Bscan >= Bp:
-            v_scan_list = v_list[:Bp]; f_scan_list = f_list[:Bp]
-        else:
-            reps = (Bp + Bscan - 1) // Bscan
-            v_scan_list = (v_list * reps)[:Bp]
-            f_scan_list = (f_list * reps)[:Bp]
-
-        depth_scan_chunks = []
-        for i in range(Bp):
-            v_i, f_i = v_scan_list[i], f_scan_list[i]
-            mh_i = MeshHelper(num_vertices=v_i.shape[0], faces=f_i.detach().cpu().numpy())
-            try:
-                out_i = mh_i.render_lots_of_stuff(
-                    v_i.unsqueeze(0), Kv_all[i:i+1], Extr_all[i:i+1],
-                    radial_distortions=None,
-                    depth_rendering_height=H, depth_rendering_width=W,
-                    return_depth=True, normalize_normals=False
-                )
-                depth_scan_chunks.append(out_i['depth_images'].view(1, n_vv, H, W))
-            except Exception as e:
-                print(f"[VV minimal] Scan rendering failed @sample {i}:", e)
-                depth_scan_chunks.append(torch.zeros(1, n_vv, H, W, device=device, dtype=dtype))
-        depth_scan = torch.cat(depth_scan_chunks, dim=0)
-
-        # ---- pointmaps & robust loss (with dataset-specific rotated views) ----
-        vis = ((depth_pred > 0.0) & (depth_scan > 0.0)).float()
-
-        rotated_views_for_pointmaps = [6, 7]
-
-        p_pred = depth_to_pointmap_robust(
-            depth_pred, K=Kv_all, extr=Extr_all, rotated_views=rotated_views_for_pointmaps
-        ).permute(0, 1, 4, 2, 3)
-        p_scan = depth_to_pointmap_robust(
-            depth_scan, K=Kv_all, extr=Extr_all, rotated_views=rotated_views_for_pointmaps
-        ).permute(0, 1, 4, 2, 3)
-
-        # keep your Z scaling convention
-        p_pred = p_pred.clone(); p_scan = p_scan.clone()
-        p_pred[:, :, 2] /= 30.0; p_scan[:, :, 2] /= 30.0
-
-        # loss_pm, _ = calculate_map_loss(
-        #     p_pred.reshape(Bp * n_vv, 3, H, W),
-        #     p_scan.reshape(Bp * n_vv, 3, H, W),
-        #     mask=vis.reshape(Bp * n_vv, H, W),
-        #     robust=True, gmo_sigma=10
-        # )
-        loss_pm, pm_loss_pp = calculate_map_loss(
-            p_pred.reshape(Bp * n_vv, 3, H, W),
-            p_scan.reshape(Bp * n_vv, 3, H, W),
-            mask=vis.reshape(Bp * n_vv, H, W),
-            robust=True, gmo_sigma=10
-        )
-
-        # cache minimal vis state
-        self.vv_K    = Kv_all.detach().cpu()
-        self.vv_extr = Extr_all.detach().cpu()
-        self.vv_size = (H, W)
-
-        # --- NEW: cache pointmaps and per-pixel loss for visualization ---
-        self.vv_pointmaps_pred = p_pred.detach().cpu()              # (B, n_vv, 3, H, W)
-        self.vv_pointmaps_scan = p_scan.detach().cpu()              # (B, n_vv, 3, H, W)
-        self.vv_pm_loss_per_pixel = pm_loss_pp.view(Bp, n_vv, H, W).detach().cpu()
-        self.vv_vis_mask = vis.detach().cpu()                       # (B, n_vv, H, W)
-        # print(loss_pm, weight)
-
-        return loss_pm * weight, {}
-
-
-    # def compute_virtual_views_loss( # v3 1 !important
-    #     self,
-    #     vertices_pred,
-    #     # zoom_range=(1.10, 1.90),   # we are training with this the local
-    #     zoom_range=(1.40, 1.90),   # fx, fy *= s
-    #     rot_deg=2.5,              # random ±rot_deg around each cam axis (cam frame)
-    #     weight=None
-    # ):
-    #     import torch, math
-    #     device = vertices_pred.device
-    #     dtype  = vertices_pred.dtype
-
-    #     if weight is None:
-    #         weight = getattr(self.args, 'weight_virtual_views', 10.0)
-    #     if weight <= 0.0:
-    #         return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-    #     Bp, V, _ = vertices_pred.shape
-    #     H = int(self.inputs['images'].shape[-2])
-    #     W = int(self.inputs['images'].shape[-1])
-
-    #     K_real    = self.inputs['camera_intrinsics']   # (B_inp, N, 3, 3)
-    #     Extr_real = self.inputs['camera_extrinsics']   # (B_inp, N, 3, 4)
-    #     B_inp, N_real = K_real.shape[:2]
-
-    #     # batch-align
-    #     if B_inp != Bp:
-    #         rep = int((Bp + B_inp - 1) // B_inp)
-    #         K_real    = K_real.repeat(rep, 1, 1, 1)[:Bp]
-    #         Extr_real = Extr_real.repeat(rep, 1, 1, 1)[:Bp]
-
-    #     # drop the last two (back views)
-    #     keep_idx = torch.arange(max(0, N_real - 2), device=device)
-    #     n_vv = keep_idx.numel()
-    #     if n_vv == 0:
-    #         return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-    #     Kv_all   = K_real[:, keep_idx].clone()         # (B, n_vv, 3, 3)
-    #     Extr_all = Extr_real[:, keep_idx].clone()      # (B, n_vv, 3, 4)
-
-    #     # ---- zoom intrinsics (fx, fy) ----
-    #     s_lo, s_hi = float(zoom_range[0]), float(zoom_range[1])
-    #     s = (s_lo + (s_hi - s_lo) * torch.rand(Bp, n_vv, device=device, dtype=dtype))
-    #     Kv_all[..., 0, 0] = Kv_all[..., 0, 0] * s
-    #     Kv_all[..., 1, 1] = Kv_all[..., 1, 1] * s
-    #     # cx, cy unchanged
-
-    #     # ---- small random rotation in camera frame; keep camera center fixed ----
-    #     R = Extr_all[..., :3]                  # (B,n,3,3)
-    #     t = Extr_all[..., 3]                   # (B,n,3)
-
-    #     # random Euler angles (roll z, pitch y, yaw x)
-    #     max_rad = math.radians(float(rot_deg))
-    #     ax = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2*max_rad) - max_rad  # yaw (x)
-    #     ay = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2*max_rad) - max_rad  # pitch (y)
-    #     az = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2*max_rad) - max_rad  # roll (z)
-
-    #     cx, sx = torch.cos(ax), torch.sin(ax)
-    #     cy, sy = torch.cos(ay), torch.sin(ay)
-    #     cz, sz = torch.cos(az), torch.sin(az)
-
-    #     # Rx, Ry, Rz (B,n,3,3)
-    #     Rx = torch.stack([
-    #         torch.stack([torch.ones_like(cx), torch.zeros_like(cx), torch.zeros_like(cx)], dim=-1),
-    #         torch.stack([torch.zeros_like(cx),        cx,                 -sx],            dim=-1),
-    #         torch.stack([torch.zeros_like(cx),        sx,                  cx],            dim=-1),
-    #     ], dim=-2)
-    #     Ry = torch.stack([
-    #         torch.stack([      cy, torch.zeros_like(cy),  sy], dim=-1),
-    #         torch.stack([torch.zeros_like(cy), torch.ones_like(cy), torch.zeros_like(cy)], dim=-1),
-    #         torch.stack([     -sy, torch.zeros_like(cy),  cy], dim=-1),
-    #     ], dim=-2)
-    #     Rz = torch.stack([
-    #         torch.stack([ cz, -sz, torch.zeros_like(cz)], dim=-1),
-    #         torch.stack([ sz,  cz, torch.zeros_like(cz)], dim=-1),
-    #         torch.stack([torch.zeros_like(cz), torch.zeros_like(cz), torch.ones_like(cz)], dim=-1),
-    #     ], dim=-2)
-
-    #     # cam-frame delta: R_delta = Rz @ Ry @ Rx
-    #     R_delta = Rz @ Ry @ Rx
-
-    #     # keep center C invariant -> R' = R_delta @ R, t' = R_delta @ t
-    #     R_new = R_delta @ R
-    #     t_new = (R_delta @ t.unsqueeze(-1)).squeeze(-1)
-    #     Extr_all[..., :3] = R_new
-    #     Extr_all[..., 3]  = t_new
-
-    #     # ---- render predicted depth under (Kv_all, Extr_all) ----
-    #     try:
-    #         pred = self.mesh_helper.render_lots_of_stuff(
-    #             vertices_pred, Kv_all, Extr_all,
-    #             radial_distortions=None,
-    #             depth_rendering_height=H, depth_rendering_width=W,
-    #             return_depth=True, normalize_normals=False
-    #         )
-    #     except Exception as e:
-    #         print("[VV minimal] Pred rendering failed:", e)
-    #         return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-    #     depth_pred = pred['depth_images'].view(Bp, n_vv, H, W)
-
-    #     # ---- render scan depth (same K/Extr) ----
-    #     if isinstance(self.data['v_scan'], list):
-    #         v_list = [v.to(device=device, dtype=dtype) for v in self.data['v_scan']]
-    #     else:
-    #         v_all = self.data['v_scan'].to(device=device, dtype=dtype)
-    #         v_list = [v_all[i] for i in range(v_all.shape[0])]
-    #     if isinstance(self.data['f_scan'], list):
-    #         f_list = [f.to(device=device) for f in self.data['f_scan']]
-    #     else:
-    #         f_all = self.data['f_scan'].to(device=device)
-    #         f_list = [f_all[i] for i in range(f_all.shape[0])]
-
-    #     Bscan = min(len(v_list), len(f_list))
-    #     if Bscan >= Bp:
-    #         v_scan_list = v_list[:Bp]; f_scan_list = f_list[:Bp]
-    #     else:
-    #         reps = (Bp + Bscan - 1) // Bscan
-    #         v_scan_list = (v_list * reps)[:Bp]
-    #         f_scan_list = (f_list * reps)[:Bp]
-
-    #     depth_scan_chunks = []
-    #     for i in range(Bp):
-    #         v_i, f_i = v_scan_list[i], f_scan_list[i]
-    #         mh_i = MeshHelper(num_vertices=v_i.shape[0], faces=f_i.detach().cpu().numpy())
-    #         try:
-    #             out_i = mh_i.render_lots_of_stuff(
-    #                 v_i.unsqueeze(0), Kv_all[i:i+1], Extr_all[i:i+1],
-    #                 radial_distortions=None,
-    #                 depth_rendering_height=H, depth_rendering_width=W,
-    #                 return_depth=True, normalize_normals=False
-    #             )
-    #             depth_scan_chunks.append(out_i['depth_images'].view(1, n_vv, H, W))
-    #         except Exception as e:
-    #             print(f"[VV minimal] Scan rendering failed @sample {i}:", e)
-    #             depth_scan_chunks.append(torch.zeros(1, n_vv, H, W, device=device, dtype=dtype))
-    #     depth_scan = torch.cat(depth_scan_chunks, dim=0)
-
-    #     # ---- pointmaps & robust loss (with rotated_views=[]) ----
-    #     vis = ((depth_pred > 0.0) & (depth_scan > 0.0)).float()
-
-    #     p_pred = depth_to_pointmap_robust(
-    #         depth_pred, K=Kv_all, extr=Extr_all, rotated_views=[]
-    #     ).permute(0, 1, 4, 2, 3)
-    #     p_scan = depth_to_pointmap_robust(
-    #         depth_scan, K=Kv_all, extr=Extr_all, rotated_views=[]
-    #     ).permute(0, 1, 4, 2, 3)
-
-    #     # keep your Z scaling convention
-    #     p_pred = p_pred.clone(); p_scan = p_scan.clone()
-    #     p_pred[:, :, 2] /= 30.0; p_scan[:, :, 2] /= 30.0
-
-    #     # loss_pm, _ = calculate_map_loss(
-    #     #     p_pred.reshape(Bp * n_vv, 3, H, W),
-    #     #     p_scan.reshape(Bp * n_vv, 3, H, W),
-    #     #     mask=vis.reshape(Bp * n_vv, H, W),
-    #     #     robust=True, gmo_sigma=10
-    #     # )
-    #     loss_pm, pm_loss_pp = calculate_map_loss(
-    #         p_pred.reshape(Bp * n_vv, 3, H, W),
-    #         p_scan.reshape(Bp * n_vv, 3, H, W),
-    #         mask=vis.reshape(Bp * n_vv, H, W),
-    #         robust=True, gmo_sigma=10
-    #     )
-
-    #     # cache minimal vis state
-    #     self.vv_K    = Kv_all.detach().cpu()
-    #     self.vv_extr = Extr_all.detach().cpu()
-    #     self.vv_size = (H, W)
-
-    #     # --- NEW: cache pointmaps and per-pixel loss for visualization ---
-    #     self.vv_pointmaps_pred = p_pred.detach().cpu()              # (B, n_vv, 3, H, W)
-    #     self.vv_pointmaps_scan = p_scan.detach().cpu()              # (B, n_vv, 3, H, W)
-    #     self.vv_pm_loss_per_pixel = pm_loss_pp.view(Bp, n_vv, H, W).detach().cpu()
-    #     self.vv_vis_mask = vis.detach().cpu()                       # (B, n_vv, H, W)
-    #     # print(loss_pm, weight)
-
-    #     return loss_pm * weight, {}
-
-
-    # def compute_virtual_views_loss( # v 4
-    #     self,
-    #     vertices_pred,
-    #     # zoom_range=(1.10, 1.90),   # we are training with this the local
-    #     zoom_range=(1.50, 2.50),   # fx, fy *= s
-    #     rot_deg=2.5,              # random ±rot_deg around each cam axis (cam frame)
-    #     weight=None
-    # ):
-    #     import torch, math
-    #     device = vertices_pred.device
-    #     dtype  = vertices_pred.dtype
-
-    #     if weight is None:
-    #         weight = getattr(self.args, 'weight_virtual_views', 10.0)
-    #     if weight <= 0.0:
-    #         return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-    #     Bp, V, _ = vertices_pred.shape
-    #     H = int(self.inputs['images'].shape[-2])
-    #     W = int(self.inputs['images'].shape[-1])
-
-    #     K_real    = self.inputs['camera_intrinsics']   # (B_inp, N, 3, 3)
-    #     Extr_real = self.inputs['camera_extrinsics']   # (B_inp, N, 3, 4)
-    #     B_inp, N_real = K_real.shape[:2]
-
-    #     # batch-align
-    #     if B_inp != Bp:
-    #         rep = int((Bp + B_inp - 1) // B_inp)
-    #         K_real    = K_real.repeat(rep, 1, 1, 1)[:Bp]
-    #         Extr_real = Extr_real.repeat(rep, 1, 1, 1)[:Bp]
-
-    #     # drop the last two (back views)
-    #     keep_idx = torch.arange(max(0, N_real), device=device)
-    #     n_vv = keep_idx.numel()
-    #     if n_vv == 0:
-    #         return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-    #     Kv_all   = K_real[:, keep_idx].clone()         # (B, n_vv, 3, 3)
-    #     Extr_all = Extr_real[:, keep_idx].clone()      # (B, n_vv, 3, 4)
-
-    #     # ---- zoom intrinsics (fx, fy) ----
-    #     s_lo, s_hi = float(zoom_range[0]), float(zoom_range[1])
-    #     s = (s_lo + (s_hi - s_lo) * torch.rand(Bp, n_vv, device=device, dtype=dtype))
-    #     Kv_all[..., 0, 0] = Kv_all[..., 0, 0] * s
-    #     Kv_all[..., 0, 1] = Kv_all[..., 0, 1] * s
-    #     Kv_all[..., 1, 1] = Kv_all[..., 1, 1] * s
-    #     Kv_all[..., 1, 0] = Kv_all[..., 1, 0] * s
-    #     # cx, cy unchanged
-
-    #     # ---- small random rotation in camera frame; keep camera center fixed ----
-    #     # [DELETE the old R_delta-based code block entirely]
-    #     # R = Extr_all[..., :3]
-    #     # t = Extr_all[..., 3]
-    #     # ... ax/ay/az, R_delta, R_new, t_new ...
-
-    #     # ---- NEW: Dolly/orbit sampler while keeping the same look-at target ----
-    #     R = Extr_all[..., :3].contiguous()         # (B, n, 3, 3) world->cam
-    #     t = Extr_all[..., 3].contiguous()          # (B, n, 3)
-
-    #     # Camera center in world: C = -R^T t
-    #     Rt = R.transpose(-2, -1)                   # (B, n, 3, 3)
-    #     C = -(Rt @ t.unsqueeze(-1)).squeeze(-1)    # (B, n, 3)
-
-    #     # Original forward (optical axis) in world.
-    #     # Convention: camera looks along +Z_cam. So ez_cam = [0,0,1].
-    #     ez = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=dtype)
-    #     ez = ez.view(1, 1, 3, 1).expand(R.shape[0], R.shape[1], 3, 1)      # (B,n,3,1)
-    #     f0 = (Rt @ ez).squeeze(-1)                                         # (B,n,3), world forward
-    #     f0 = torch.nn.functional.normalize(f0, dim=-1, eps=1e-9)
-
-    #     # Original up in world (to preserve roll). For image coords (x right, y down),
-    #     # up_cam is -Y: [0,-1,0]. If your renderer uses +Y up, change to [0,1,0].
-    #     up_cam = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype)
-    #     up_cam = up_cam.view(1,1,3,1).expand(R.shape[0], R.shape[1], 3, 1)  # (B,n,3,1)
-    #     up0 = (Rt @ up_cam).squeeze(-1)                                     # (B,n,3), world up
-    #     # In case up0 ~ f0, fix degeneracy with a global up
-    #     global_up = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype).view(1,1,3).expand_as(up0)
-    #     colin = (torch.abs((up0 * f0).sum(-1)) > 0.99).unsqueeze(-1)        # (B,n,1)
-    #     up0 = torch.where(colin, global_up, up0)
-    #     up0 = torch.nn.functional.normalize(up0, dim=-1, eps=1e-9)
-
-    #     # Choose a gaze target G ≈ intersection of the original optical axis with the mesh region.
-    #     # Use predicted-vertex centroid as an anchor for depth along f0:
-    #     mesh_ctr = vertices_pred.mean(dim=1, keepdim=True)                  # (B,1,3)
-    #     mesh_ctr = mesh_ctr.expand(-1, R.shape[1], -1)                      # (B,n,3)
-    #     s = ((mesh_ctr - C) * f0).sum(-1, keepdim=True)                     # (B,n,1) signed distance along f0
-    #     G = C + s * f0                                                      # (B,n,3)
-    #     rad = torch.norm(C - G, dim=-1, keepdim=True).clamp_min(1e-9)  # (B,n,1)
-
-    #     # Build an orthonormal basis (u,v,f0) for the tangent plane around f0
-    #     u = torch.nn.functional.normalize(torch.cross(up0, f0, dim=-1), dim=-1, eps=1e-9)  # (B,n,3)
-    #     v = torch.nn.functional.normalize(torch.cross(f0,  u, dim=-1), dim=-1, eps=1e-9)   # (B,n,3)
-
-    #     # --- Spherical orbit around G by small angles (no K change) ---
-    #     max_deg = getattr(self.args, 'vv_sphere_deg', 15.0)   # e.g., up to ±8°
-    #     max_rad = math.radians(max_deg)
-
-    #     # Sample angular offsets: dtheta (elevation about v), dphi (azimuth about u)
-    #     dtheta = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2 - 1) * max_rad  # (-max,+max)
-    #     dphi   = (torch.rand(Bp, n_vv, device=device, dtype=dtype) * 2 - 1) * max_rad
-
-    #     # Original direction from target to camera
-    #     dir0 = torch.nn.functional.normalize(C - G, dim=-1, eps=1e-9)  # (B,n,3)
-
-    #     def rodrigues(axis, angle):
-    #         # axis: (B,n,3), angle: (B,n)
-    #         a = torch.nn.functional.normalize(axis, dim=-1, eps=1e-9)
-    #         ax, ay, az = a[..., 0], a[..., 1], a[..., 2]
-    #         zeros = torch.zeros_like(ax)
-    #         K = torch.stack([
-    #             torch.stack([    zeros, -az,     ay], dim=-1),
-    #             torch.stack([      az, zeros,   -ax], dim=-1),
-    #             torch.stack([     -ay,   ax,  zeros], dim=-1),
-    #         ], dim=-2)  # (B,n,3,3)
-
-    #         c = torch.cos(angle).unsqueeze(-1).unsqueeze(-1)  # (B,n,1,1)
-    #         s = torch.sin(angle).unsqueeze(-1).unsqueeze(-1)
-    #         I = torch.eye(3, device=device, dtype=dtype).view(1,1,3,3).expand(a.shape[0], a.shape[1], 3, 3)
-    #         aaT = a.unsqueeze(-1) * a.unsqueeze(-2)  # (B,n,3,3)
-    #         return c * I + (1.0 - c) * aaT + s * K   # (B,n,3,3)
-
-    #     # Apply two small rotations: first around u (azimuth), then around v (elevation)
-    #     R_az = rodrigues(u, dphi)          # rotate around 'u'
-    #     R_el = rodrigues(v, dtheta)        # then around 'v'
-    #     R_delta = R_el @ R_az              # (B,n,3,3)
-
-    #     new_dir = (R_delta @ dir0.unsqueeze(-1)).squeeze(-1)         # (B,n,3)
-    #     new_dir = torch.nn.functional.normalize(new_dir, dim=-1, eps=1e-9)
-
-    #     # Keep the same radius r and target G, move camera center on the sphere
-    #     # C_new = G + r * new_dir  # (B,n,3)
-    #                                            # (B,n,3)
-    #     C_new = G + rad * new_dir  # (B,n,3)
-
-    #     # New forward to keep looking at the same G
-    #     f = torch.nn.functional.normalize(G - C_new, dim=-1, eps=1e-9)          # (B,n,3)
-
-    #     # Preserve original roll: compute right from original up0, then recompute up to be orthogonal to f
-    #     r = torch.nn.functional.normalize(torch.cross(up0, f, dim=-1), dim=-1, eps=1e-9)  # (B,n,3)
-    #     up = torch.nn.functional.normalize(torch.cross(f, r, dim=-1), dim=-1, eps=1e-9)   # (B,n,3)
-
-    #     # Camera-to-world (columns are axes): [r, up, f], then world->cam is transpose
-    #     R_c2w = torch.stack([r, up, f], dim=-1)                                   # (B,n,3,3)
-    #     R_new = R_c2w.transpose(-2, -1).contiguous()                              # (B,n,3,3)
-
-    #     # New translation: t' = -R' * C'
-    #     t_new = -(R_new @ C_new.unsqueeze(-1)).squeeze(-1)                        # (B,n,3)
-
-    #     Extr_all[..., :3] = R_new
-    #     Extr_all[..., 3]  = t_new
-
-
-
-    #     # ---- render predicted depth under (Kv_all, Extr_all) ----
-    #     try:
-    #         pred = self.mesh_helper.render_lots_of_stuff(
-    #             vertices_pred, Kv_all, Extr_all,
-    #             radial_distortions=None,
-    #             depth_rendering_height=H, depth_rendering_width=W,
-    #             return_depth=True, normalize_normals=False
-    #         )
-    #     except Exception as e:
-    #         print("[VV minimal] Pred rendering failed:", e)
-    #         return torch.tensor(0.0, device=device, dtype=dtype), {}
-
-    #     depth_pred = pred['depth_images'].view(Bp, n_vv, H, W)
-
-    #     # ---- render scan depth (same K/Extr) ----
-    #     if isinstance(self.data['v_scan'], list):
-    #         v_list = [v.to(device=device, dtype=dtype) for v in self.data['v_scan']]
-    #     else:
-    #         v_all = self.data['v_scan'].to(device=device, dtype=dtype)
-    #         v_list = [v_all[i] for i in range(v_all.shape[0])]
-    #     if isinstance(self.data['f_scan'], list):
-    #         f_list = [f.to(device=device) for f in self.data['f_scan']]
-    #     else:
-    #         f_all = self.data['f_scan'].to(device=device)
-    #         f_list = [f_all[i] for i in range(f_all.shape[0])]
-
-    #     Bscan = min(len(v_list), len(f_list))
-    #     if Bscan >= Bp:
-    #         v_scan_list = v_list[:Bp]; f_scan_list = f_list[:Bp]
-    #     else:
-    #         reps = (Bp + Bscan - 1) // Bscan
-    #         v_scan_list = (v_list * reps)[:Bp]
-    #         f_scan_list = (f_list * reps)[:Bp]
-
-    #     depth_scan_chunks = []
-    #     for i in range(Bp):
-    #         v_i, f_i = v_scan_list[i], f_scan_list[i]
-    #         mh_i = MeshHelper(num_vertices=v_i.shape[0], faces=f_i.detach().cpu().numpy())
-    #         try:
-    #             out_i = mh_i.render_lots_of_stuff(
-    #                 v_i.unsqueeze(0), Kv_all[i:i+1], Extr_all[i:i+1],
-    #                 radial_distortions=None,
-    #                 depth_rendering_height=H, depth_rendering_width=W,
-    #                 return_depth=True, normalize_normals=False
-    #             )
-    #             depth_scan_chunks.append(out_i['depth_images'].view(1, n_vv, H, W))
-    #         except Exception as e:
-    #             print(f"[VV minimal] Scan rendering failed @sample {i}:", e)
-    #             depth_scan_chunks.append(torch.zeros(1, n_vv, H, W, device=device, dtype=dtype))
-    #     depth_scan = torch.cat(depth_scan_chunks, dim=0)
-
-    #     # ---- pointmaps & robust loss (with rotated_views=[]) ----
-    #     vis = ((depth_pred > 0.0) & (depth_scan > 0.0)).float()
-
-    #     p_pred = depth_to_pointmap_robust(
-    #         depth_pred, K=Kv_all, extr=Extr_all, rotated_views=[6,7]
-    #     ).permute(0, 1, 4, 2, 3)
-    #     p_scan = depth_to_pointmap_robust(
-    #         depth_scan, K=Kv_all, extr=Extr_all, rotated_views=[6,7]
-    #     ).permute(0, 1, 4, 2, 3)
-
-    #     # keep your Z scaling convention
-    #     p_pred = p_pred.clone(); p_scan = p_scan.clone()
-    #     p_pred[:, :, 2] /= 30.0; p_scan[:, :, 2] /= 30.0
-
-    #     # loss_pm, _ = calculate_map_loss(
-    #     #     p_pred.reshape(Bp * n_vv, 3, H, W),
-    #     #     p_scan.reshape(Bp * n_vv, 3, H, W),
-    #     #     mask=vis.reshape(Bp * n_vv, H, W),
-    #     #     robust=True, gmo_sigma=10
-    #     # )
-    #     loss_pm, pm_loss_pp = calculate_map_loss(
-    #         p_pred.reshape(Bp * n_vv, 3, H, W),
-    #         p_scan.reshape(Bp * n_vv, 3, H, W),
-    #         mask=vis.reshape(Bp * n_vv, H, W),
-    #         robust=True, gmo_sigma=10
-    #     )
-
-    #     # cache minimal vis state
-    #     self.vv_K    = Kv_all.detach().cpu()
-    #     self.vv_extr = Extr_all.detach().cpu()
-    #     self.vv_size = (H, W)
-
-    #     # --- NEW: cache pointmaps and per-pixel loss for visualization ---
-    #     self.vv_pointmaps_pred = p_pred.detach().cpu()              # (B, n_vv, 3, H, W)
-    #     self.vv_pointmaps_scan = p_scan.detach().cpu()              # (B, n_vv, 3, H, W)
-    #     self.vv_pm_loss_per_pixel = pm_loss_pp.view(Bp, n_vv, H, W).detach().cpu()
-    #     self.vv_vis_mask = vis.detach().cpu()                       # (B, n_vv, H, W)
-    #     # print(loss_pm, weight)
-
-    #     return loss_pm * weight, {}
-
-    def visualize_virtual_views(self, out_dir_suffix='vv', sample_idx=0, max_views=8):
-        """
-        Minimal visualization with pointmaps:
-          Row 1: [Pred render | Scan render]
-          Row 2: [Pred PointMap | Scan PointMap | PointMap Loss]
-        Requires compute_virtual_views_loss to have run this step.
-        """
-        import os, numpy as np, cv2
-
-        need = ['vv_K','vv_extr','vv_size','global_points','faces','data',
-                'vv_pointmaps_pred','vv_pointmaps_scan','vv_pm_loss_per_pixel']
-        if not all(hasattr(self, k) for k in need):
-            print('[visualize_virtual_views] Missing caches; run compute_virtual_views_loss first.')
-            return
-
-        H, W = self.vv_size
-        B = int(self.vv_K.shape[0])
-        b = int(max(0, min(sample_idx, B-1)))
-
-        Kb    = self.vv_K[b].numpy()         # (n_vv, 3,3)
-        Extrb = self.vv_extr[b].numpy()      # (n_vv, 3,4)
-        n_vv  = Kb.shape[0]
-
-        # Pred mesh (current model)
-        faces_pred = self.faces.cpu().numpy()
-        verts_pred = self.global_points[b].detach().cpu().numpy()
-
-        # Scan mesh
-        if isinstance(self.data['v_scan'], list):
-            scan_v = self.data['v_scan'][b].cpu().numpy()
-            scan_f = self.data['f_scan'][b].cpu().numpy()
-        else:
-            scan_v = self.data['v_scan'][b].cpu().numpy()
-            scan_f = self.data['f_scan'][b].cpu().numpy()
-
-        # Cached pointmaps & loss
-        p_pred_b = self.vv_pointmaps_pred[b].numpy()      # (n_vv, 3, H, W)
-        p_scan_b = self.vv_pointmaps_scan[b].numpy()      # (n_vv, 3, H, W)
-        pm_loss_b = self.vv_pm_loss_per_pixel[b].numpy()  # (n_vv, H, W)
-
-        os.makedirs(os.path.join(self.directory_output, f'{out_dir_suffix}_images'), exist_ok=True)
-
-        def put_label(img_rgb, txt):
-            img = img_rgb.copy()
-            cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0), 3, cv2.LINE_AA)
-            cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 1, cv2.LINE_AA)
-            return img
-
-        rows_all = []
-        show_n = min(n_vv, int(max_views))
-        for v in range(show_n):
-            K = Kb[v]; extr = Extrb[v]
-
-            cam_args = dict(
-                camera_intrinsics=K,
-                camera_extrinsics=extr,
-                radial_distortion=None,
-                frustum={'near': 0.01, 'far': 3000.0},
-                image_size=(H, W)
-            )
-
-            # --- Row 1: renders ---
-            scan_img = render_mesh(vertices=scan_v,   faces=scan_f,       vertex_colors=None, **cam_args)
-            pred_img = render_mesh(vertices=verts_pred, faces=faces_pred, vertex_colors=None, needs_projection=True, **cam_args)
-            row1 = np.hstack([
-                put_label(np.clip(pred_img, 0, 255).astype(np.uint8), 'Pred render'),
-                put_label(np.clip(scan_img, 0, 255).astype(np.uint8), 'Scan render'),
-            ])
-
-            # --- Row 2: pointmaps & loss (match your other vis: use GT min/max) ---
-            # p_*: (3, H, W)
-            p_gt   = p_scan_b[v]
-            p_pred = p_pred_b[v]
-
-            # Colorize GT first to get consistent channel-wise min/max
-            pm_gt_rgb, ch_min, ch_max = pointmap_to_rgb(p_gt)
-            pm_pr_rgb, _, _ = pointmap_to_rgb(p_pred, ch_min, ch_max)
-
-            # Per-pixel loss -> heatmap
-            pm_loss = pm_loss_b[v]
-            # print(pm_loss.min(), pm_loss.max())
-            pm_loss_vis = dist_to_rgb(pm_loss.reshape(-1), min_dist=0.0, max_dist=3.0).reshape(H, W, 3)
-            # print(pm_loss_vis)
-            pm_loss_vis = (pm_loss_vis * 255).astype(np.uint8)
-
-            row2 = np.hstack([
-                put_label(pm_pr_rgb.astype(np.uint8), 'Pred PointMap'),
-                put_label(pm_gt_rgb.astype(np.uint8), 'Scan PointMap'),
-                put_label(pm_loss_vis.astype(np.uint8), 'PointMap Loss'),
-            ])
-
-            rows_all.append(np.hstack([row1, row2]))
-
-        grid = np.vstack(rows_all).astype(np.uint8)
-        out_path = os.path.join(self.directory_output, f'{out_dir_suffix}_images/all_views_{self.global_step}.jpg')
-        cv2.imwrite(out_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
 
     def _save_color_grid(self, idx, n_select=4, nrows=2, ncols=4):
         """

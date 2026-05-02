@@ -47,14 +47,14 @@ else:
     undistort = True
 
 
-out_dir_normals = f"{out_grid_root}/stereo_normals"
-out_dir_rgb = f"{out_grid_root}/stereo_images"
-out_dir_depth = f"{out_grid_root}/stereo_depth"
-out_dir_intrinsics = f"{out_grid_root}/stereo_cameras"
+out_dir_normals = f"{out_grid_root}/color_normals"
+out_dir_rgb = f"{out_grid_root}/color_images"
+out_dir_depth = f"{out_grid_root}/color_depth"
+out_dir_intrinsics = f"{out_grid_root}/color_cameras"
 # out_dir_fan_landmarks = f"{out_grid_root}/fan_landmarks"
 # out_dir_fan_landmarks_3D = f"{out_grid_root}/fan_landmarks_3D_v2"
 # out_dir_mediapipe_landmarks = f"{out_grid_root}/mediapipe_landmarks"
-out_dir_dense_landmarks = f"{out_grid_root}/stereo_dense_landmarks"
+out_dir_dense_landmarks = f"{out_grid_root}/color_dense_landmarks"
 
 
 print('Processing meshes from', start, 'to', end, 'out dir:', out_grid_root, 'undistort:', undistort)
@@ -119,16 +119,11 @@ dataset = FaceAlignDatasetMPI(data_list_fname=json_out,
                                 image_file_ext='png', 
                                 return_full_scan=True,
                                 image_resize_factor=4,
-                                load_color_images=False,
-                                load_stereo_images=True,
                                 undistort_images=undistort,
-                                # fan_landmarks_dir=os.path.join(root, "downsampled_images_4_fan_landmarks_hhj1897"),
-                                # fan_landmarks_dir=os.path.join(root, "downsampled_images_4_fan_landmarks_3d_v2"),
-                                # mediapipe_landmarks_dir=in_mediapipe_path,
                                 dense_landmarks_dir=in_dense_path,
                                 )
 
-suffix = "stereo"
+suffix = "color"
 
 vis_dir = "col45"
 visualize = True

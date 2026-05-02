@@ -71,14 +71,13 @@ class TrainOptions(BaseTrainOptions):
     def initialize_extra(self):
         # base
         self.add_arg(cate='base', abbr='cf',  name='config-filename', type=str, default='')
-        self.add_arg(cate='base', abbr='md',  name='model-directory', type=str, default='./runs/coarse')
+        self.add_arg(cate='base', abbr='md',  name='model-directory', type=str, default='./runs')
         self.add_arg(cate='base', abbr='eid', name='experiment-id', type=str, default='TEMPEH')
 
         # data
         self.add_arg(cate='data', abbr='num-spnts', name='number-sample-points', type=list, default=[5023])
         self.add_arg(cate='data', abbr='templ-name', name='template-fname', type=str, default='./assets/template/sampling_template.obj')
         self.add_arg(cate='data', abbr='vmask-name', name='vertex-mask-fname', type=str, default='./assets/template/vertex_masks2.npz')
-        self.add_arg(cate='data', abbr='input-img', name='input-image-type', type=str, default='color_images')
         self.add_arg(cate='data', abbr='b-sigma', name='brightness-sigma', type=float, default=0.33)
         self.add_arg(cate='data', abbr='v_scan', name='scan-vertex-count', type=int, default=20000)
 
@@ -104,8 +103,6 @@ class TrainOptions(BaseTrainOptions):
 
         # model
         self.add_arg(cate='model', abbr='wandb', name='wandb', type=bool, default=False)
-        self.add_arg(cate='model', abbr='sviews', name='sample-views', type=bool, default=True)
-        self.add_arg(cate='model', abbr='min-views', name='minimum-sample-views', type=int, default=8)
         self.add_arg(cate='model', abbr='irf', name='image-resize-factor', type=int, default=1)
         self.add_arg(cate='model', abbr='desc-dim', name='descriptor-dim', type=int, default=8)
 
@@ -140,7 +137,6 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='model', abbr='add-norm', name='add-norm-as-input', type=bool, default=False)
         self.add_arg(cate='model', abbr='wpointmaps', name='weight-point-maps', type=float, default=0.0)
         self.add_arg(cate='model', abbr='wdepthmaps', name='weight-depth-maps', type=float, default=0.0)
-        self.add_arg(cate='model', abbr='wlaplacian', name='weight-laplacian-smoothing', type=float, default=0.0)
 
         # SMIRK loss (optional perceptual loss head)
         self.add_arg(cate='model', abbr='smirk', name='enable-smirk-loss', type=bool, default=False)
