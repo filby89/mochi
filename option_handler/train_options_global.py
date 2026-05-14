@@ -108,12 +108,11 @@ class TrainOptions(BaseTrainOptions):
 
         self.add_arg(cate='model', abbr='pretr-path', name='pretrained-path', type=str, default='')
         self.add_arg(cate='model', abbr='pretr-path-local', name='pretrained-local-path', type=str, default='')
-        self.add_arg(cate='model', abbr='pretr-fuse', name='pretrained-fuse', type=str, default='')
 
         # volumetric sparse point net
         self.add_arg(cate='model', abbr='gvd', name='global-voxel-dim', type=int, default=32)
         self.add_arg(cate='model', abbr='gvi', name='global-voxel-inc', type=float, default=25.0)
-        self.add_arg(cate='model', abbr='go', name='global-origin', type=list, default=[0.0, 0.0, 0.0])
+        self.add_arg(cate='model', abbr='go', name='global-origin', type=list, default=[0.0, -50.0, 0.0])
         self.add_arg(cate='model', abbr='nm', name='norm', type=str, default="bn")
 
         # transformer (rigid_transformer hardcoded)
@@ -134,15 +133,9 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='model', abbr='wland', name='weight-landmarks', type=float, default=0.0)
         self.add_arg(cate='model', abbr='wlandd', name='weight-dense-landmarks', type=float, default=0.0)
         self.add_arg(cate='model', abbr='wnorm', name='weight-normals-images', type=float, default=0.0)
-        self.add_arg(cate='model', abbr='add-norm', name='add-norm-as-input', type=bool, default=False)
         self.add_arg(cate='model', abbr='wpointmaps', name='weight-point-maps', type=float, default=0.0)
         self.add_arg(cate='model', abbr='wdepthmaps', name='weight-depth-maps', type=float, default=0.0)
 
-        # SMIRK loss (optional perceptual loss head)
-        self.add_arg(cate='model', abbr='smirk', name='enable-smirk-loss', type=bool, default=False)
-        self.add_arg(cate='model', abbr='wsmirk', name='weight-smirk-loss', type=float, default=0.0)
-
-        self.add_arg(cate='model', abbr='eval', name='evaluate', type=bool, default=False)
         self.add_arg(cate='model', abbr='difr', name='enable-diff-rendering', type=bool, default=False)
 
         # PLIKS-based FLAME refinement
@@ -169,8 +162,6 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='model', abbr='refine-lr', name='refinement-lr', type=float, default=1e-4)
         self.add_arg(cate='model', abbr='refine-v', name='refine-vis', type=bool, default=False)
         self.add_arg(cate='model', abbr='refine-vis-freq', name='refine-visualization-freq', type=int, default=1)
-        self.add_arg(cate='model', abbr='refine-start', name='refine-start-index', type=int, default=0)
-        self.add_arg(cate='model', abbr='refine-end', name='refine-end-index', type=int, default=-1)
 
         self.initialize_default_parameters()
 

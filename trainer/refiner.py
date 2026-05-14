@@ -1,37 +1,23 @@
 import os
-import time
-import random
-from typing import Optional
 import wandb
 import torch
-from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 from torch.autograd import Variable
-from utils.utils import print_memory, to_numpy, get_time_string, add_labels_to_images
+from utils.utils import to_numpy, add_labels_to_images
 from utils.mesh_renderer import render_mesh, dist_to_rgb
 from utils.point_to_point_loss import PointToPointLoss
-from utils.point_to_surface_loss import PointToSurfaceLoss, compute_s2m_distance, GMO, batch_chamfer_distance
+from utils.point_to_surface_loss import PointToSurfaceLoss, compute_s2m_distance
 from utils.edge_loss import EdgeLoss
 from utils.mesh_helper import MeshHelper, pointmap_to_rgb, depth_to_pointmap_robust
 from trainer.base_trainer import BaseTrainer
 from option_handler.train_options_global import TrainOptions
-from psbody.mesh import Mesh
 from models.FLAME.FLAME import FLAME
 import math
-from mpl_toolkits.mplot3d import Axes3D
 import cv2
-import pickle
-import pprint
-import kaolin
-from pytorch3d.ops import corresponding_points_alignment
 import trimesh
-from tqdm import tqdm
-import psutil
-from trainer.utils import get_dense_vertex_colors, random_pixel_mask, draw_dense_points
-import kornia
-from utils.losses import geodesic_normal_loss_p3d, calculate_map_loss, calculate_gradient_map_loss, _points2surface_metric
+from trainer.utils import get_dense_vertex_colors, draw_dense_points
+from utils.losses import calculate_map_loss, calculate_gradient_map_loss
 import torch.nn.functional as F
-import kornia
 import pandas as pd
 
 
@@ -45,7 +31,7 @@ class Trainer(BaseTrainer):
 
         self.no_jaw = True
 
-        from models.FLAME.pliks_flame_2 import PliksFlameSolver  # <-- NEW
+        from models.FLAME.pliks_flame_2 import PliksFlameSolver
 
         self.flame = FLAME(flame_model_path='assets/FLAME2023/flame2023_no_jaw.pkl', no_jaw=True).to(device)
 
@@ -119,19 +105,6 @@ class Trainer(BaseTrainer):
         # trainable
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f'Trainable model parameters: {trainable_params/1e6:.2f} Mio')
-
-        if self.args.enable_smirk_loss:
-            from models.smirk.smirk_generator import SmirkGenerator
-            if self.args.image_resize_factor == 1:
-                self.fuse_generator = SmirkGenerator(in_channels=6, out_channels=3, init_features=32, res_blocks=5).to(self.device)
-            else:
-                self.fuse_generator = SmirkGenerator(in_channels=6, out_channels=3, init_features=32, res_blocks=5, input_size=(150,200)).to(self.device)
-
-            self.optimizer_fuse = torch.optim.AdamW(self.fuse_generator.parameters(), lr=1e-3)
-            
-            if self.args.pretrained_fuse:
-                cp = torch.load(self.args.pretrained_fuse, map_location=self.device)
-                self.fuse_generator.load_state_dict(cp['model'], strict=True)
 
         if self.args.enable_local:
             import models.model_aligner.prototypes.model_local_stage as models
@@ -224,14 +197,10 @@ class Trainer(BaseTrainer):
     def register_dataset(self, index=0):
         from utils import mesh_sampling, utils
 
-        self.split_list = utils.load_json(self.args.train_data_list_fname)
+        self.split_list = utils.load_json(self.args.val_data_list_fname)
 
-        # # save tmp
+        # create a temporary
         import json
-        # os.makedirs(os.path.join(self.directory_output, mode + '_images'), exist_ok=True)
-
-        # json_out = f"assets/tmp.json"
-        # create a unique uuid for this complete run
         import uuid
         if hasattr(self, 'run_uuid'):
             run_uuid = getattr(self, 'run_uuid')
@@ -309,8 +278,6 @@ class Trainer(BaseTrainer):
             suffix = '_augmented'
         else:
             suffix = ''
-
-        print('suffx', suffix)
 
         number_views = data['color_images'].shape[1]
         images = data['color_images' + suffix]
@@ -536,8 +503,6 @@ class Trainer(BaseTrainer):
                 'eye_pose_params':   eye_pose_params,
             })
             V_flame = out['vertices'] #+ t_hat[:, None, :]   # meters
-            fan_landmarks_pliks = out['landmarks_fan_3d']  # pixels, projected inside FLAME module
-            mediapipe_landmarks_pliks = out['landmarks_mp']
             # V_flame_mm = V_flame * 1000.0    
             # do float32 
             with torch.cuda.amp.autocast(enabled=False):
@@ -651,16 +616,6 @@ class Trainer(BaseTrainer):
             gmo_sigma=10
         )
 
-        # # normal_maps_pred: (B, V, 3, H, W) in [-1,1], already renormalized in your code
-        # loss_geo, angle_map = geodesic_normal_loss_p3d(
-        #     normal_maps_pred,
-        #     self.normal_maps_gt,               # (B, V, 3, H, W)
-        #     mask=visibility_mask,              # (B, V, H, W)
-        #     reduction="mean",
-        #     return_per_pixel=True
-        # )
-        # losses[f'normal_geo_loss{suffix}'] = loss_geo * getattr(self.args, 'weight_normals_images_geo', 1.0)
-        # predictions[f'normal_geo_angle_map{suffix}'] = angle_map  # radians
 
         # --- NEW: gradient loss on normal maps ---
         normals_pred_flat = normal_maps_pred_norm.view(bs * num_views, c, height, width)
@@ -720,149 +675,6 @@ class Trainer(BaseTrainer):
         setattr(self, f'normals_grad_loss_per_pixel{suffix}',
                 normals_grad_pp.view(bs, num_views, height, width).detach().cpu())
 
-        # SMIRK loss computation
-        if self.args.enable_smirk_loss and normal_maps_pred is not None:
-            # smirk_losses, smirk_predictions = self.compute_smirk_loss(normal_maps_pred_11, visibility_mask, suffix)
-            smirk_losses, smirk_predictions = self.compute_smirk_loss(normal_maps_pred, visibility_mask, suffix) # 01 is for the 300-400 smirk model, 11 for the 150-200
-            losses.update(smirk_losses)
-            predictions.update(smirk_predictions)
-
-
-        return losses, predictions
-
-    def compute_smirk_loss(self, normal_maps_pred, visibility_mask, suffix=""):
-        """
-        Compute SMIRK loss for given normal maps.
-        """
-        bs, num_views, c, height, width = self.inputs['images'].shape
-        losses = {}
-        predictions = {}
-        
-        self.fuse_generator.eval()
-        visibility_mask_flat = visibility_mask.view(bs * num_views, height, width)
-        self.visibility_mask_flat = visibility_mask_flat #.detach().cpu()
-        inverse_visibility_mask = 1.0 - visibility_mask_flat.float()
-        
-        gt_images = self.inputs['images'].view(bs * num_views, c, height, width) 
-        # denormalize 
-        gt_images = gt_images * self.dataset_train.std.to(self.device).view(1, c, 1, 1) + self.dataset_train.mean.to(self.device).view(1, c, 1, 1)
-        # im = self.dataset_train.denormalize_image(im)
-        # print(gt_images.min(), gt_images.max(), 'gt images stats for smirk')
-
-        masked_images, _ = random_pixel_mask(gt_images, visibility_mask=inverse_visibility_mask)
-        
-        pred_maps = torch.cat([masked_images, normal_maps_pred.view(bs * num_views, c, height, width)], dim=1)
-
-        if self.args.image_resize_factor == 2:
-            pred_maps = torch.nn.functional.pad(pred_maps, (8,0,10,0), mode='constant', value=0)
-
-        pred_fused_images = self.fuse_generator(pred_maps)
-
-        if self.args.image_resize_factor == 2:
-            pred_fused_images = pred_fused_images[:, :, 10:, 8:]
-
-        pred_fused_images = pred_fused_images.view(bs, num_views, c, height, width)
-
-        gt_maps = torch.cat([masked_images, self.normal_maps_gt_01.view(bs * num_views, c, height, width)], dim=1)
-
-        if self.args.image_resize_factor == 2:
-            gt_maps = torch.nn.functional.pad(gt_maps, (8,0,10,0), mode='constant', value=0)
-
-        gt_fused_images = self.fuse_generator(gt_maps)
-
-        if self.args.image_resize_factor == 2:
-            gt_fused_images = gt_fused_images[:, :, 10:, 8:]
-
-        gt_fused_images = gt_fused_images.view(bs, num_views, c, height, width)
-
-        gt_images = gt_images.view(bs, num_views, c, height, width)
-
-        # get the area 
-        # eye_region_landmarks = self.global_landmarks_projected_dense_out[:,:,self.flame_masks['eye_region']]
-
-
-        # smirk_loss_l1 = torch.nn.functional.l1_loss(pred_fused_images[:,self.non_rotated_views], gt_images[:,self.non_rotated_views]) * 100
-        # smirk_loss_vgg = self.vgg_loss(pred_fused_images[:,self.non_rotated_views], gt_images[:,self.non_rotated_views], needs_normalization=True)
-        # smirk_loss = (smirk_loss_l1 + smirk_loss_vgg) * self.args.weight_smirk_loss
-
-        # --- Build a per-view eye-region mask from dense landmarks (bbox) ---
-        bs, num_views, c, height, width = self.inputs['images'].shape
-        device = self.device
-
-        # landmarks in pixel coords: (B, V, K, 2)
-        eye_region_landmarks = self.global_landmarks_projected_dense_out[:, :, np.concatenate((self.flame_masks['left_eyeball'],self.flame_masks['right_eyeball']))]  # (B,V,K,2)
-
-        # Compute bbox per (B,V)
-        x = eye_region_landmarks[..., 0]
-        y = eye_region_landmarks[..., 1]
-
-        xmin = torch.clamp(torch.floor(x.min(dim=2).values).long(), 0, width  - 1)
-        xmax = torch.clamp(torch.ceil( x.max(dim=2).values).long(), 0, width  - 1)
-        ymin = torch.clamp(torch.floor(y.min(dim=2).values).long(), 0, height - 1)
-        ymax = torch.clamp(torch.ceil( y.max(dim=2).values).long(), 0, height - 1)
-
-        # Optional padding around the eyes (in pixels)
-        pad = 0
-        xmin = (xmin - pad).clamp(min=0)
-        xmax = (xmax + pad).clamp(max=width - 1)
-        ymin = (ymin - pad).clamp(min=0)
-        ymax = (ymax + pad).clamp(max=height - 1)
-
-        # Create binary mask (B,V,1,H,W), 1 inside bbox
-        yy = torch.arange(height, device=device).view(1, 1, height, 1)
-        xx = torch.arange(width,  device=device).view(1, 1, 1, width)
-
-        # Broadcast comparisons per view
-        in_y = (yy >= ymin.unsqueeze(-1).unsqueeze(-1)) & (yy <= ymax.unsqueeze(-1).unsqueeze(-1))
-        in_x = (xx >= xmin.unsqueeze(-1).unsqueeze(-2)) & (xx <= xmax.unsqueeze(-1).unsqueeze(-2))
-        eye_mask = (in_y & in_x).float().unsqueeze(2)  # (B,V,1,H,W)
-
-        # If you only train on non-rotated views for SMIRK, we’ll index those later.
-        # --- Masked L1 on images (non-rotated views only) ---
-        pred_imgs = pred_fused_images[:, self.non_rotated_views]     # (B, Vnr, C, H, W)
-        gt_imgs   = gt_images[:, self.non_rotated_views]             # (B, Vnr, C, H, W)
-        mask_imgs = eye_mask[:, self.non_rotated_views]              # (B, Vnr, 1, H, W)
-
-        # Standardize shapes
-        diff = torch.abs(pred_imgs - gt_imgs)                        # (B, Vnr, C, H, W)
-        num = (diff * mask_imgs).sum()
-        den = (mask_imgs.sum() * diff.shape[2]).clamp_min(1e-8)      # multiply by channels
-        smirk_loss_l1 = num / den
-
-        # --- Per-pixel map for SMIRK L1 (masked), like your normals/pointmap maps ---
-        # diff: (B, Vnr, C, H, W), mask_imgs: (B, Vnr, 1, H, W)
-        l1_map = diff.mean(dim=2) * mask_imgs.squeeze(2)          # (B, Vnr, H, W)
-        self.smirk_l1_loss_per_pixel = l1_map.detach().cpu()
-
-
-        # --- Masked VGG perceptual loss over the same area ---
-        # Flatten views to batch for the perceptual loss
-        pred_vgg_in = pred_imgs.reshape(-1, c, height, width)
-        gt_vgg_in   = gt_imgs.reshape(-1, c, height, width)
-        mask_vgg_in = mask_imgs.reshape(-1, 1, height, width)
-
-        smirk_loss_vgg = self.vgg_loss(pred_vgg_in, gt_vgg_in, needs_normalization=True, mask=mask_vgg_in)
-
-        smirk_loss_vgg, vgg_map = self.vgg_loss(
-            pred_vgg_in, gt_vgg_in, needs_normalization=True, mask=mask_vgg_in, return_map=True
-        )
-        # vgg_map: (B*Vnr, H, W) -> reshape to (B, Vnr, H, W)
-        smirk_vgg_map = vgg_map.view(bs, -1, height, width)
-        self.smirk_vgg_loss_per_pixel = smirk_vgg_map.detach().cpu()
-
-        # Total SMIRK loss
-        smirk_loss = (smirk_loss_l1 + smirk_loss_vgg) * self.args.weight_smirk_loss
-
-
-        losses[f'smirk_loss{suffix}'] = smirk_loss
-        losses[f'smirk_loss_l1{suffix}'] = smirk_loss_l1
-        losses[f'smirk_loss_vgg{suffix}'] = smirk_loss_vgg
-        
-        predictions[f'pred_fused_images{suffix}'] = pred_fused_images.detach().cpu()
-        predictions[f'gt_fused_images{suffix}'] = gt_fused_images.detach().cpu()
-        predictions[f'masked_images{suffix}'] = masked_images.view(bs, num_views, c, height, width).detach().cpu()
-        
-        
         return losses, predictions
 
     def compute_landmarks_loss(self, vertices, suffix="", gt_landmarks=None, gt_mask=None):
@@ -1180,24 +992,11 @@ class Trainer(BaseTrainer):
 
         
         # ---------- PLIKS ---------- #
-        beta_reg = torch.tensor(0.0, device=self.device)
-        exp_reg  = torch.tensor(0.0, device=self.device)
-
-        # weights (put these in your args/config)
         w_beta = getattr(self.args, 'weight_shape_regularization', 0.0)      # e.g., 1e-4
         w_exp  = getattr(self.args, 'weight_expression_regularization', 0.0) # e.g., 1e-4
         w_pose = getattr(self.args, 'weight_pose_regularization', 0.0)       # e.g., 1e-4
 
-        have_flame_branch_params = hasattr(self, 'shape_params') and self.shape_params is not None \
-                                and hasattr(self, 'expression_params') and self.expression_params is not None
-
-        if have_flame_branch_params:
-            beta_reg = (self.shape_params ** 2).mean() * w_beta
-            exp_reg  = (self.expression_params ** 2).mean() * w_exp
-            all_losses['beta_regularizer'] = beta_reg
-            all_losses['exp_regularizer']  = exp_reg
-    
-        elif hasattr(self, 'pliks_out') and self.pliks_out is not None:
+        if hasattr(self, 'pliks_out') and self.pliks_out is not None:
             beta_all = self.pliks_out['beta']  # (B, n_shape+n_exp)
             n_id, n_exp = self.flame.n_shape, self.flame.n_exp
             beta_id  = beta_all[:, :n_id]
@@ -1367,13 +1166,6 @@ class Trainer(BaseTrainer):
         self.normals_loss = all_losses.get('normals_loss', 0.0)
         self.depth_maps_loss = all_losses.get('depth_maps_loss', 0.0)
         self.point_maps_loss = all_losses.get('point_maps_loss', 0.0)
-        self.smirk_loss = all_losses.get('smirk_loss', 0.0)
-        self.smirk_loss_l1 = all_losses.get('smirk_loss_l1', 0.0)
-        self.smirk_loss_vgg = all_losses.get('smirk_loss_vgg', 0.0)
-        # self.adversarial_loss = adversarial_loss
-        # self.landmarks_loss = landmarks_loss
-        self.chamfer_distance = all_losses.get('chamfer_distance', 0.0)
-        self.flame_regularization_loss = all_losses.get('flame_regularization_loss', 0.0)
         self.normals_grad_loss = all_losses.get('normals_grad_loss', 0.0)
 
         # Create losses dictionary for logging
@@ -1385,26 +1177,16 @@ class Trainer(BaseTrainer):
             'Depth loss': self.depth_maps_loss,
             'Points2Surface loss': self.points2surface_loss,
             'Edge regularizer': self.edge_regularizer_loss,
-            'Smirk loss': self.smirk_loss if self.args.enable_smirk_loss else 0.0,
-            'Smirk loss L1': self.smirk_loss_l1 if self.args.enable_smirk_loss else 0.0,
-            'Smirk loss VGG': self.smirk_loss_vgg if self.args.enable_smirk_loss else 0.0,
-            'Identity loss': all_losses.get('identity_loss', 0.0) if getattr(self.args, 'enable_arcface_loss', False) else 0.0,
             'Landmarks loss (dense)': all_losses.get('landmarks_loss_dense', 0.0) if getattr(self, 'landmarks_dense', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
             'Landmarks loss (dense) out': all_losses.get('landmarks_loss_dense_out', 0.0) if getattr(self, 'landmarks_dense', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
-            'FLAME regularization loss': self.flame_regularization_loss if self.args.enable_flame_branch else 0.0,
             'β regularizer (PLIKS)': all_losses.get('beta_regularizer_pliks', 0.0) if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'ψ regularizer (PLIKS)': all_losses.get('exp_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Pose regularizer (PLIKS)': all_losses.get('pose_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
-            't regularizer (PLIKS)': all_losses.get('t_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Vertices regularizer (PLIKS)': all_losses.get('vertices_regularizer_pliks', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Vertices edge regularizer (PLIKS)': all_losses.get('vertices_regularizer_pliks_edge', 0.0)  if hasattr(self, 'pliks_out') and self.pliks_out is not None else 0.0,
             'Normals grad loss': self.normals_grad_loss if hasattr(self, 'normals_grad_loss') else 0.0,
-            'Landmarks loss (dense fan)': all_losses.get('landmarks_loss_dense_fan', 0.0), #if getattr(self, 'landmarks_dense_fan', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
-            'Landmarks loss (dense fan) out': all_losses.get('landmarks_loss_dense_fan_out', 0.0), # if getattr(self, 'landmarks_dense_fan', None) is not None and self.args.weight_dense_landmarks > 0.0 else 0.0,
-            'Landmarks loss (dense mediapipe)': all_losses.get('landmarks_loss_dense_mediapipe', 0.0), # if getattr(self, 'landmarks_dense_mediapipe', None) is not None and self.args.weight_dense_landmarks > 0.0
-            # else 0.0,
-            'Landmarks loss (dense mediapipe) out': all_losses.get('landmarks_loss_dense_mediapipe_out', 0.0) # if getattr(self, 'landmarks_dense_mediapipe', None) is not None and self.args.weight_dense_landmarks > 0.0
-            # else 0.0,
+            'Landmarks loss (dense mediapipe)': all_losses.get('landmarks_loss_dense_mediapipe', 0.0),
+            'Landmarks loss (dense mediapipe) out': all_losses.get('landmarks_loss_dense_mediapipe_out', 0.0)
 
         }
         if hasattr(self, 'losses'):
@@ -1430,191 +1212,6 @@ class Trainer(BaseTrainer):
             if self.args.gradient_max_norm > 0.0:
                 torch.nn.utils.clip_grad_norm_(self.model.module.optimizable_parms(), max_norm=self.args.gradient_max_norm, norm_type=2)
             self.optimizer_model.step()
-
-    def run(self):
-        batch_size = self.args.batch_size
-        num_epoch = int(np.ceil(self.args.num_iterations / float(len(self.dataset_train)) * batch_size))
-        start_epoch = int(self.global_step / float(len(self.dataset_train)) * batch_size)+1
-        print("expect to run for %d epoches" % (num_epoch-start_epoch))
-
-        for epoch_idx in range(start_epoch, num_epoch+1):
-            np.random.seed() # reset seed
-            print('************************')
-            print('Epoch %d / %d' % (epoch_idx, num_epoch))
-            print('************************')
-            self.train_one_epoch()
-
-    def train_one_epoch(self):
-        for data in tqdm(self.dataloader_train, desc='Training', total=len(self.dataloader_train)):
-            self.train_step(data)
-
-
-    # def train_step(self, data):
-    #     self.losses = {}
-
-    #     self.feed_data(data)
-
-    #     for param_group in self.optimizer_model.param_groups:
-    #         lr = param_group['lr']
-
-    #     self.model.train()
-    #     self.forward()
-    #     self.compute_losses()
-    #     self.backward()
-
-    #     if self.global_step % self.args.print_frequency == 0:        
-    #         print('%s, step %d, total loss: %f, ' %(get_time_string(), self.global_step, to_numpy(self.loss)))
-    #         d= {
-    #             'Learning rate/train': lr,
-    #         }
-    #         # print(self.data['f_reg_global'])
-    #         # Only compute main model metrics if not in FLAME-only mode
-    #         # def _points2surface_metric(self, points_to_use, v_scan, v_registration, f_reg_global, flame_masks_triangles):
-    #         distances = _points2surface_metric(self.global_points, self.data['v_scan'], self.data['v_registration'], self.data['f_reg_global'], self.flame_masks_triangles)
-    #         for key in distances:
-    #             d['Points2Surface distance %s/train' % key] = np.mean(distances[key])
-    #             d['Points2Surface distance %s/train median' % key] = np.median(distances[key])
-    #             d['Points2Surface distance %s/train std' % key] = np.std(distances[key])
-
-    #         for key in self.losses:
-    #             d['%s/train' % key] = to_numpy(self.losses[key])
-            
-    #         pprint.pprint(d)
-            
-    #         if self.args.wandb:
-    #             wandb.log(d, step=self.global_step)
-
-    #     if (self.global_step % self.args.visualize_frequency == 0):# and (self.global_step > 0):
-    #         try:
-
-    #             self.visualize('train')
-    #         except Exception as e:
-    #             print(f"Error occurred during visualization: {e}")
-    #             raise e
-    #     if (self.global_step > 0) and (self.global_step % self.args.validate_frequency == 0):               
-    #         with torch.no_grad():
-    #             self.validate()
-    #     if (self.global_step > 0) and (self.global_step % self.args.save_frequency == 0):
-    #         self.save_checkpoint()
-        
-
-    #     if self.global_step % self.args.print_frequency == 0:        
-    #         self.cleanup_memory()
-    #         print_memory(self.device, prefix='FW')
-
-    #     self.global_step += 1
-
-
-    # def train_step(self, data):
-    #     self.losses = {}
-
-    #     self.feed_data(data)
-
-    #     for param_group in self.optimizer_model.param_groups:
-    #         lr = param_group['lr']
-
-    #     self.model.train()
-    #     self.forward()
-    #     self.compute_losses()
-    #     self.backward()
-
-    #     if self.global_step % self.args.print_frequency == 0:        
-    #         print('%s, step %d, total loss: %f, ' %(get_time_string(), self.global_step, to_numpy(self.loss)))
-    #         d= {
-    #             'Learning rate/train': lr,
-    #         }
-    #         # print(self.data['f_reg_global'])
-    #         # Only compute main model metrics if not in FLAME-only mode
-    #         # def _points2surface_metric(self, points_to_use, v_scan, v_registration, f_reg_global, flame_masks_triangles):
-    #         distances = _points2surface_metric(self.global_points, self.data['v_scan'], self.data['v_registration'], self.data['f_reg_global'], self.flame_masks_triangles)
-    #         for key in distances:
-    #             d['Points2Surface distance %s/train' % key] = np.mean(distances[key])
-    #             d['Points2Surface distance %s/train median' % key] = np.median(distances[key])
-    #             d['Points2Surface distance %s/train std' % key] = np.std(distances[key])
-
-    #         for key in self.losses:
-    #             d['%s/train' % key] = to_numpy(self.losses[key])
-            
-    #         pprint.pprint(d)
-            
-    #         if self.args.wandb:
-    #             wandb.log(d, step=self.global_step)
-
-    #     if (self.global_step % self.args.visualize_frequency == 0):# and (self.global_step > 0):
-    #         try:
-
-    #             self.visualize('train')
-    #         except Exception as e:
-    #             print(f"Error occurred during visualization: {e}")
-    #             raise e
-    #     if (self.global_step > 0) and (self.global_step % self.args.validate_frequency == 0):               
-    #         with torch.no_grad():
-    #             self.validate()
-    #     if (self.global_step > 0) and (self.global_step % self.args.save_frequency == 0):
-    #         self.save_checkpoint()
-        
-
-    #     if self.global_step % self.args.print_frequency == 0:        
-    #         self.cleanup_memory()
-    #         print_memory(self.device, prefix='FW')
-
-    #     self.global_step += 1
-
-
-    # def validate(self):
-    #     self.losses = {}
-
-    #     validation_losses = {}
-
-    #     vis_validation_every = 25
-
-    #     for i, data in enumerate(self.dataloader_val):
-    #         self.feed_data(data, mode='val')
-
-    #         self.model.eval()
-    #         if self.args.enable_local:
-    #             self.local_model.eval()
-
-    #         self.forward()
-    #         self.compute_losses()
-
-    #         for key in self.losses:
-    #             if key not in validation_losses:
-    #                 validation_losses[key] = []
-    #             validation_losses[key].append(to_numpy(self.losses[key]))
-
-    #         distances = _points2surface_metric(self.global_points, self.data['v_scan'], self.data['v_registration'], self.data['f_reg_global'], self.flame_masks_triangles)
-    #         for key in distances:
-    #             distance_key = 'Points2Surface distance %s' % key
-    #             if distance_key not in validation_losses:
-    #                 validation_losses[distance_key] = np.array([], dtype=np.float32)
-    #             validation_losses[distance_key] = np.concatenate([validation_losses[distance_key], to_numpy(distances[key])])
-
-
-    #         if i % vis_validation_every == 0:
-    #             print('Visualizing validation sample %d' % i)
-    #             try:
-    #                 self.visualize('val', val_idx=i)
-    #             except Exception as e:
-    #                 print(f"Error occurred during validation visualization: {e}")
-
-    #             self.export_mesh('val', i)
-
-    #             print_memory(self.device, prefix='FW')
-    #         # break
-
-    #     d = {}
-    #     for key in validation_losses:
-    #         validation_losses[key] = np.array(validation_losses[key])
-    #         # print(validation_losses[key].shape)
-    #         d['%s/validation' % key] = np.mean(validation_losses[key])
-    #         d['%s/validation median' % key] = np.median(validation_losses[key])
-    #         d['%s/validation std' % key] = np.std(validation_losses[key])
-
-    #     print('Validation results:')
-    #     pprint.pprint(d)
-    #     if self.args.wandb:
-    #         wandb.log(d, step=self.global_step)
 
     def visualize(self, mode='train', val_idx=0):
         if mode == 'train':
@@ -1779,30 +1376,6 @@ class Trainer(BaseTrainer):
 
 
 
-                    if self.args.enable_smirk_loss:
-                        relative_view_id = np.where(self.current_batch_view_ids==view_id)[0][0]
-                        pred_fused_image = self.pred_fused_images[idx][relative_view_id].cpu().numpy()
-                        gt_fused_image = self.gt_fused_images[idx][relative_view_id].cpu().numpy()
-                        masked_image = self.masked_images[idx][relative_view_id].cpu().numpy()
-                        # print(pred_fused_image.max(), pred_fused_image.min(),'fused image stats')
-                        pred_fused_image = (255*pred_fused_image).astype(np.uint8)
-                        # print(pred_fused_image.max(), pred_fused_image.min(),'fused image stats')
-
-                        gt_fused_image = (255*gt_fused_image).astype(np.uint8)
-                        masked_image = (255*masked_image).astype(np.uint8)
-
-                        # transpose them !
-                        pred_fused_image = pred_fused_image.transpose(1, 2, 0)
-                        gt_fused_image = gt_fused_image.transpose(1, 2, 0)
-                        masked_image = masked_image.transpose(1, 2, 0)
-                        # cv2.imwrite('pred_fused_image.png', pred_fused_image[:,:,::-1])
-                        # cv2.imwrite('gt_fused_image.png', gt_fused_image[:,:,::-1])
-                        # cv2.imwrite('masked_image.png', masked_image[:,:,::-1])
-                        # raise
-
-
-                        # FLAME SMIRK predictions
-
                     input_image = (255*input_image).astype(np.uint8)
 
                     camera_args = {
@@ -1935,20 +1508,6 @@ class Trainer(BaseTrainer):
                         vis_image = input_image.copy()
 
 
-                    # --- SMIRK loss maps (per-pixel) ---
-                    if hasattr(self, 'smirk_l1_loss_per_pixel') and len(self.smirk_l1_loss_per_pixel[idx]) > relative_view_id:
-                        smirk_l1_pp = self.smirk_l1_loss_per_pixel[idx][relative_view_id].cpu().numpy()  # (H,W)
-                        H_, W_ = smirk_l1_pp.shape
-                        smirk_l1_vis = dist_to_rgb(smirk_l1_pp.reshape(-1), min_dist=0.0, max_dist=3.0).reshape(H_, W_, 3)
-                        smirk_l1_vis = (smirk_l1_vis * 255).astype(np.uint8)
-
-                    if hasattr(self, 'smirk_l1_loss_per_pixel') and len(self.smirk_l1_loss_per_pixel[idx]) > relative_view_id:
-                        smirk_vgg_pp = self.smirk_vgg_loss_per_pixel[idx][relative_view_id].cpu().numpy()
-                        H_, W_ = smirk_vgg_pp.shape
-                        smirk_vgg_vis = dist_to_rgb(smirk_vgg_pp.reshape(-1), min_dist=0.0, max_dist=3.0).reshape(H_, W_, 3)
-                        smirk_vgg_vis = (smirk_vgg_vis * 255).astype(np.uint8)
-
-
                     # Pair up images and labels
                     pairs = [
                         (input_image, "Input"),
@@ -1973,11 +1532,6 @@ class Trainer(BaseTrainer):
                         *([(point_maps_pred, "Pred PointMap")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
                         *([(point_maps_gt, "GT PointMap")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
                         *([(point_map_loss_per_pixel_vis, "PointMap Loss")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
-                        *([(pred_fused_image, "Pred Fused")] if self.args.enable_smirk_loss else []),
-                        *([(gt_fused_image, "GT Fused")] if self.args.enable_smirk_loss else []),
-                        *([(smirk_l1_vis,  "SMIRK L1 Loss")]  if 'smirk_l1_vis'  in locals() else []),
-                        *([(smirk_vgg_vis, "SMIRK VGG Loss")] if 'smirk_vgg_vis' in locals() else []),
-                        *([(masked_image, "Masked Input")] if self.args.enable_smirk_loss else []),
                         *([(pliks_reconstruction_rendering, "PLIKS Recon")] if pliks_reconstruction_rendering is not None else []),   # <-- NEW
                         *([(pliks_error_rendering, "PLIKS Error")] if reconstructed_vertices_pliks is not None else []),  # <-- NEW
                         *([(pliks_flame_reconstruction_rendering, "PLIKS FLAME Recon")] if pliks_flame_reconstruction_rendering is not None else []),  # <-- NEW
@@ -2056,17 +1610,6 @@ class Trainer(BaseTrainer):
         Extr[0, 3] = -50.0
         Extr[1, 3] = -38.0
         Extr[2, 3] = 1350.0
-
-        # print(K.shape, Extr.shape)
-        # proj = K @ Extr
-        # print('K')
-        # print(K)
-        # print('Extr')
-        # print(Extr)
-        # print('K@Extr = ')
-        # print(proj)
-        # raise
-        
 
         # --- Scan geometry for error coloring ---
         if isinstance(self.data['v_scan'], list):
@@ -2211,7 +1754,7 @@ class Trainer(BaseTrainer):
         2) running summary,
         3) FINAL summary that aggregates ALL raw P2S distances per region (like Tester).
         """
-        import copy, csv, numpy as np, pprint, os, torch
+        import copy, csv, numpy as np, os, torch
         from collections import defaultdict
         from utils import utils
         
@@ -2241,21 +1784,7 @@ class Trainer(BaseTrainer):
         # steps_to_gather = [0, 50, -100] #, 50, -100]
         gather_intermediate = True
 
-        # for idx in [6,147]: #range(147,num_items,10):
-        # the guy with the teeth bug (and the teaser is 1506 in the test set ! )
-        start = getattr(self.args, 'refine_start_index', 0)
-        end   = getattr(self.args, 'refine_end_index', -1)
-        print('Running refinement from index', start, 'to', end)
-
-        # assert end > 0, "Please set refine_end_index to a positive integer."
-
-        if end < 0:
-            end = num_items - 1
-
-        # radek = [7870,223,7410,7030,7350,7880]
-        for idx in range(start, end + 1): #[2,3,27,35,88] : # range(start, end + 1):
-        # for idx in radek: # range(start,end + 1): #[2,3,27,35,88] : # range(start, end + 1):
-            # for idx in range(0,num_items): #,10):
+        for idx in range(num_items):
             print(f'\n[Refine] >>> Sample {idx+1}/{num_items}')
             # 1) re-init dataset for this index (creates loaders for the single item)
 
@@ -2458,27 +1987,8 @@ class Trainer(BaseTrainer):
                                 # print lengths
                                 print(f'Key: {distance_key}, vals length: {len(vals)}, iteration: {t},  total length: {len(validation_losses_per_epoch[t][distance_key])}')
                         
-                        # Final summary (convert & print once)
 
-                        # if self.args.refine_start_index == 0 and self.args.refine_end_index == -1:
-                        #     if idx % 5 == 0 or (idx == num_items - 1): 
-                        #         # print('Current IDX', idx)
-                        #         # print('\n[Refine] Running validation summary so far:')
-                        #         # for t in validation_losses_per_epoch.keys():
-                        #         #     print('At step', t)
-                        #         #     self._print_validation_table(validation_losses_per_epoch[t])
-                                                    
-
-                        #         print("\n==== FINAL COMBINED VALIDATION TABLE ====")
-                        #         csv_out = os.path.join(self.directory_output, "validation_combined.csv")
-                        #         self._print_validation_table_multi(validation_losses, validation_losses_per_epoch, csv_path=csv_out)
-
-
-            if VIZ_PAPER and self.args.refine_start_index == 0 and self.args.refine_end_index == -1:
-                # self.forward_tempeh()
-                # vertices_for_viz.append(self.global_points_tempeh[0].cpu())
-                # faces_for_viz.append(self.faces.cpu())
-                # labels_for_viz.append(f'TEMPEH')
+            if VIZ_PAPER:
 
                 print('Saving refinement visualization for paper...')
                 # raise
@@ -2500,29 +2010,27 @@ class Trainer(BaseTrainer):
                 
             # lightweight vis (optional)
             if refine_vis and (idx % self.args.refine_visualization_freq == 0 or idx == num_items - 1):
-                if self.args.refine_start_index == 0 and self.args.refine_end_index == -1:
-                    self._save_color_grid(idx)
-                    self.export_mesh('val', idx)
+                self._save_color_grid(idx)
+                self.export_mesh('val', idx)
 
-            if self.args.refine_start_index == 0 and self.args.refine_end_index == -1:
-                # 5) final eval pass (no grad) and collect metrics
-                with torch.no_grad():
-                    refine_model.eval()
-                    coarse_model.eval()
-                    self.forward(coarse_model, refine_model)   # <— pass models
-                    self.compute_losses()
+            # 5) final eval pass (no grad) and collect metrics
+            with torch.no_grad():
+                refine_model.eval()
+                coarse_model.eval()
+                self.forward(coarse_model, refine_model)   # <— pass models
+                self.compute_losses()
 
-                    # --- Points2Surface for Base ---
-                    distances = self._points2surface_metric(self.global_points)
-                    for key in distances:
-                        distance_key = f'Points2Surface distance {key}'
-                        if distance_key not in validation_losses:
-                            validation_losses[distance_key] = []
+                # --- Points2Surface for Base ---
+                distances = self._points2surface_metric(self.global_points)
+                for key in distances:
+                    distance_key = f'Points2Surface distance {key}'
+                    if distance_key not in validation_losses:
+                        validation_losses[distance_key] = []
 
-                        vals = distances[key]
-                        validation_losses[distance_key].extend(vals)
-                        # print lengths
-                        print(f'Key: {distance_key}, vals length: {len(vals)}, total length: {len(validation_losses[distance_key])}')
+                    vals = distances[key]
+                    validation_losses[distance_key].extend(vals)
+                    # print lengths
+                    print(f'Key: {distance_key}, vals length: {len(vals)}, total length: {len(validation_losses[distance_key])}')
                 
             # Final summary (convert & print once)
 

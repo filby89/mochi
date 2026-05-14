@@ -10,7 +10,7 @@ the four-stage training and test-time-optimization pipeline on FaMoS data.
 ```
 mochi_rebuttal_public/
 ├── trainer/                # entry points + training/refinement loops
-│   ├── train_global.py     # CLI for stages 1–3 (calls trainer.global_trainer.run)
+│   ├── train.py            # CLI for stages 1–3 (calls trainer.global_trainer.run)
 │   ├── train_refine.py     # CLI for stage 4 / TTO  (calls trainer.refiner.run)
 │   ├── global_trainer.py   # main training class
 │   ├── refiner.py          # test-time optimization class
@@ -122,11 +122,11 @@ The exact CLI arguments reproduced by each script:
 ### Stage 1 — pretraining (no differentiable rendering)
 
 ```bash
-python -m trainer.train_global \
+python -m trainer.train \
   -eid restart/coarse_nodifrs \
   -print-freq 100 -val-freq 20000 -vis-freq 100 \
   -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
-  --input-image-type color_images --num-iterations 300000 \
+  --num-iterations 300000 \
   -wpointr 0 -wp2s 0 -wlandd 1 \
   -wshapereg 1e-3 -wexpreg 1e-3 \
   -wvertregpliks 1e-3 -wvertregpliks-edge 0.1 \
@@ -136,11 +136,11 @@ python -m trainer.train_global \
 ### Stage 2 — coarse with differentiable rendering
 
 ```bash
-python -m trainer.train_global \
+python -m trainer.train \
   -eid restart/coarse_difrs \
   -print-freq 100 -val-freq 20000 -vis-freq 1000 \
   -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
-  --input-image-type color_images --num-iterations 300000 \
+  --num-iterations 300000 \
   -wpointr 0 -wp2s 0 -wlandd 0.5 \
   -wshapereg 1e-3 -wexpreg 1e-3 \
   -wvertregpliks 1e-3 -wvertregpliks-edge 0.1 \
@@ -152,11 +152,11 @@ python -m trainer.train_global \
 ### Stage 3 — local refinement
 
 ```bash
-python -m trainer.train_global \
+python -m trainer.train \
   -eid restart/local_wland005 \
   -print-freq 100 -val-freq 20000 -vis-freq 300 \
   -b 2 -irf 1 -wandb True --gradient-max-norm 1 \
-  --input-image-type color_images --num-iterations 300000 \
+  --num-iterations 300000 \
   -wpointr 0.01 -wp2s 0 -wlandd 0.0 --weight-landmarks 0.05 \
   -wshapereg 1e-6 -wexpreg 1e-5 \
   -wvertregpliks 1e-5 -wvertregpliks-edge 0.1 \
@@ -170,18 +170,19 @@ python -m trainer.train_global \
 
 ```bash
 python -m trainer.train_refine \
-  -eid tto/$(REF_START)_$(REF_END) \
-  --gradient-max-norm 1 --input-image-type color_images \
+  -eid tto/full_dataset \
+  --gradient-max-norm 1 \
   -b 1 -irf 1 -difr True -wpointmaps 10 -wnorm 4 \
   -wp2s 0 -wlandd 0 -wpointr 0.01 -wedge 0.01 \
   --weight-landmarks 0.5 \
   --enable-local True \
+  --point-mask-weights '{"w_point_face":0.0,"w_point_ears":0.0,"w_point_eyeballs":1.0,"w_point_eye_region":0.0,"w_point_lips":0.0,"w_point_neck":0.0,"w_point_nostrils":0.0,"w_point_scalp":0.0,"w_point_boundary":0.0}' \
   -tdl <path-to-train-data-list>.json \
   -vdl assets/meshes_list_test.json \
   -refine-lr 1e-3 -refine-steps 105 \
   --refine-vis True -refine-vis-freq 1 -vis-freq 1 \
-  --refine-start-index $(REF_START) --refine-end-index $(REF_END) \
-  --pretrained-path runs/coarse/<your-stage3-run>/checkpoints/model_00300000.pth
+  --pretrained-path runs/<your-stage2-run>/checkpoints/model_00300000.pth \
+  --pretrained-local-path runs/<your-stage3-run>/checkpoints/local_00300000.pth
 ```
 
 ---

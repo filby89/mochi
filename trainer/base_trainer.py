@@ -93,31 +93,12 @@ class BaseTrainer():
 
     def save_checkpoint(self):
         
-        if not getattr(self.args, 'flame_only', False):
-            model_path = os.path.join(self.model_dir, 'model_%08d.pth' % (self.global_step))
-            torch.save({
-                'model': self.model.module.state_dict(),
-                'optimizer_model': self.optimizer_model.state_dict()
-                }, model_path)
+        model_path = os.path.join(self.model_dir, 'model_%08d.pth' % (self.global_step))
+        torch.save({
+            'model': self.model.module.state_dict(),
+            'optimizer_model': self.optimizer_model.state_dict()
+            }, model_path)
 
-        if self.args.enable_smirk_loss:
-            fuse_generator_path = os.path.join(self.model_dir, 'fuse_generator_%08d.pth' % (self.global_step))
-            torch.save({
-                'model': self.fuse_generator.state_dict()
-            }, fuse_generator_path)
-
-        if self.args.enable_discriminator:
-            discriminator_path = os.path.join(self.model_dir, 'discriminator_%08d.pth' % (self.global_step))
-            torch.save({
-                'model': self.discriminator.state_dict()
-            }, discriminator_path)
-
-        if self.args.enable_flame_branch:
-            flame_path = os.path.join(self.model_dir, 'flame_%08d.pth' % (self.global_step))
-            torch.save({
-                'model': self.flame_model.state_dict()
-            }, flame_path)
-        
         if self.args.enable_local:
             flame_path = os.path.join(self.model_dir, 'local_%08d.pth' % (self.global_step))
             torch.save({

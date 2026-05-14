@@ -27,20 +27,12 @@ from utils import utils
 from utils.data_augment import get_random_crop_offsets, scale_crop, pad_img_and_intrinsics
 import cv2
 
-DISABLE_AUGM = False
-
-PAD_TO_VIT = False
-
 class FaceAlignDatasetMPI(data.Dataset):
     def __init__(self, 
                 data_list_fname,
                 dataset_root_dir='',
                 image_dir='',
                 image_resize_factor = 1,
-                pad_to_vit=False,
-                pad_multiple=14,
-                output_image_height=None,     # ← NEW
-                output_image_width=None,      # ← NEW
                 calibration_dir='',
                 scan_dir='',
                 normals_dir='',
@@ -56,28 +48,15 @@ class FaceAlignDatasetMPI(data.Dataset):
                 image_file_ext='png',
                 dense_landmarks_dir='',
                 dense_semantic_landmarks_dir='',
-                return_full_scan=False,
                 to_meters=False,
                 camera_names=None
                 ):
         super().__init__()
-
        
         if os.path.exists(data_list_fname):
             self.split_list = utils.load_json(data_list_fname)
         else:
             raise RuntimeError('Invalid data path - %s' % data_list_fname)
-        print()
-        # f = 0
-        # for i in self.split_list:
-        #     if i[1] == 'mouth_side':
-        #         break
-        #     f += 1
-        # self.split_list = self.split_list[f:f+1]
-        self.return_full_scan = return_full_scan
-
-        self.pad_to_vit = bool(pad_to_vit)
-        self.pad_multiple = int(pad_multiple) if pad_multiple is not None else 14
 
         self.to_meters = to_meters
 
@@ -99,27 +78,21 @@ class FaceAlignDatasetMPI(data.Dataset):
 
         if os.path.exists(image_dir):
             self.img_dir = lambda subject, sequence, frame : os.path.join(image_dir, subject, sequence, frame)
-            # self.img_fname = lambda subject, sequence, frame, view : os.path.join(self.img_dir(subject, sequence, frame), '%s.%s.%s.%s' % (sequence, frame, view, image_file_ext))
             self.img_fname_grid = lambda subject, sequence, frame : os.path.join(self.img_dir(subject, sequence, frame), '%s.%s.%s' % (sequence, frame, image_file_ext))
 
         if os.path.exists(normals_dir):
             self.normals_img_dir = lambda subject, sequence, frame : os.path.join(normals_dir, subject, sequence, frame)
-            # self.normals_img_fname = lambda subject, sequence, frame, view : os.path.join(self.normals_img_dir(subject, sequence, frame), '%s.%s.%s.%s' % (sequence, frame, view, image_file_ext))
             self.normals_img_fname_grid = lambda subject, sequence, frame : os.path.join(self.normals_img_dir(subject, sequence, frame), '%s.%s.%s' % (sequence, frame, 'npy'))
         else:
             self.normals_img_dir = None
             self.normals_img_fname_grid = None
-            # raise RuntimeError('Invalid normals directory')
-        print(self.normals_img_dir, self.normals_img_fname_grid)
 
-        # print('Depths directory:', depths_dir)
         if os.path.exists(depths_dir):
             self.depths_dir = lambda subject, sequence, frame : os.path.join(depths_dir, subject, sequence, frame)
             self.depths_fname = lambda subject, sequence, frame : os.path.join(self.depths_dir(subject, sequence, frame), '%s.%s.npy' % (sequence, frame))
         else:
             self.depths_dir = None
             self.depths_fname = None
-            # raise RuntimeError('Invalid depths directory')
 
         if os.path.exists(calibration_dir):
             self.calibration_numpy_dir = lambda subject, sequence, frame : os.path.join(calibration_dir, subject, sequence, frame)
@@ -174,23 +147,10 @@ class FaceAlignDatasetMPI(data.Dataset):
         self.mean_np = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         self.std_np  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-        # self.mean_np = np.array([0, 0, 0], dtype=np.float32)
-        # self.std_np  = np.array([1, 1, 1], dtype=np.float32)
 
         self.mean = torch.from_numpy(self.mean_np)
         self.std  = torch.from_numpy(self.std_np)
 
-
-        # find unique subjects
-
-        self.subjects = set()
-        for split in self.split_list:
-            subject, sequence, frame = split
-            self.subjects.add(subject)
-        self.subjects = sorted(list(self.subjects))
-        print('Subjects', self.subjects)
-        print('Found %d subjects in the dataset' % len(self.subjects))
-            
 
     def __len__(self):
         return self.data_size
@@ -201,12 +161,6 @@ class FaceAlignDatasetMPI(data.Dataset):
     def read(self, index):
         to_meters = self.to_meters
         subject, sequence, frame = self.split_list[index]
-
-        # # Read calibration files
-        # # print(self.calibration_dir(subject, sequence))
-        # calib_fnames = sorted(glob.glob(os.path.join(self.calibration_dir(subject, sequence), '*.tka')))
-        # # print('Num calib fnames: %d' % len(calib_fnames))
-        # # print(calib_fnames)
 
         color_images = []
         color_images_normals = []
@@ -242,7 +196,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         calib = np.load(self.calibration_img_fname_grid(subject, sequence, frame))
         
         frame_grid = imageio.imread(self.img_fname_grid(subject, sequence, frame), pilmode='RGB')
-        # normals_grid = imageio.imread(self.normals_img_fname_grid(subject, sequence, frame), pilmode='RGB') if self.normals_img_fname_grid is not None else None
         normals_grid = np.load(self.normals_img_fname_grid(subject, sequence, frame)) if self.normals_img_fname_grid is not None else None
 
         if getattr(self, 'dense_landmarks_fname', None) is not None:
@@ -432,9 +385,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         # remove all None values
         data = {k: v for k, v in data.items() if v is not None}
 
-        # print(self.scan_fname)
-        # raise
-
         if (self.scan_fname != '') and (self.scan_vertex_count > 0):
             scan_fname = self.scan_fname(subject, sequence, frame)
             if self.return_full_scan:
@@ -565,7 +515,6 @@ class FaceAlignDatasetMPI(data.Dataset):
     ):
         # ---- inputs to float [0,1] for geometric ops ----
         image = image.astype(np.float32) / 255.0
-        # normals_image = normals_image.astype(np.float32) / 255.0 if normals_image is not None else None
         normals_image = normals_image.astype(np.float32) if normals_image is not None else None
         h, w = image.shape[:2]
 
@@ -575,176 +524,51 @@ class FaceAlignDatasetMPI(data.Dataset):
             'radial_distortion': calib['radial_distortion'],
             'camera_center': calib['centers'],
         }
+        np.random.seed()
+        crop_size = (h, w)  # full-res crop window
+        scale_factor = self.scale_min + (self.scale_max - self.scale_min) * np.random.random()
+        h_offset, w_offset = get_random_crop_offsets(crop_size, height=h, width=w)
 
-        # decide which path we take
-        use_direct_size = (
-            getattr(self, 'output_image_height', None) is not None and
-            getattr(self, 'output_image_width',  None) is not None
+        normals_image = normals_image * 2.0 - 1.0 if normals_image is not None else None # bring to [-1,1] for warp ops
+        # print("WAHG!")
+
+        sc = scale_crop(
+            image, crop_size, h_offset, w_offset, scale_factor,
+            K=camera['intrinsics'], normals_image=normals_image, debug=False,
+            debug_root='debug_/', landmarks=None, depth_map=depth_img
         )
-        using_depth_path = (use_direct_size and (depth_img is not None))
+        image_augmented = sc['image']
+        intrinsics_augmented = sc['K']
+        normals_augmented = sc['normals_image']
+        depth_augmented = sc['depth_map']
 
-        if using_depth_path:
-            # ============================================================
-            # PATH A: depth-guided fixed-size crop THEN random scale+crop
-            # ============================================================
-            target_h = int(self.output_image_height)
-            target_w = int(self.output_image_width)
-
-            # 1) Depth-guided square crop (geometry only) → K' = U_depth @ K
-            crop_res = crop_square_by_depth_and_update_K(
-                img=image,
-                K=camera['intrinsics'],
-                depth=depth_img.squeeze() if depth_img is not None else None,
-                normals=normals_image,
-                dense_landmarks=dense_landmarks,
-                target_size=(target_h, target_w),
-                depth_nonzero_eps=0.0,
-                bbox_margin=1.0,
-                min_bbox_px=16,
-            )
-            image_c    = crop_res['image']
-            normals_c  = crop_res['normals_image']
-            depth_c    = crop_res['depth_img']
-            K_c        = crop_res['K'] if crop_res['K'] is not None else camera['intrinsics']
-            lms_dense_c = crop_res['landmarks_dense'] if dense_landmarks is not None else None
-
-            # 2) Random scale+crop ON the cropped tensors (output stays target_h x target_w)
-            if not DISABLE_AUGM:
-                np.random.seed()
-                crop_size = (target_h, target_w)
-                scale_factor = self.scale_min + (self.scale_max - self.scale_min) * np.random.random()
-                h_offset, w_offset = get_random_crop_offsets(crop_size, height=target_h, width=target_w)
-
-                sc = scale_crop(
-                    image_c, crop_size, h_offset, w_offset, scale_factor,
-                    K=K_c, normals_image=normals_c, debug=False,
-                    landmarks=None, depth_map=depth_c
-                )
-                image_aug_np   = sc['image']
-                K_aug_np       = sc['K'] if sc['K'] is not None else K_c
-                normals_aug_np = sc['normals_image']
-                depth_aug_np   = sc['depth_map']
-
-                lms_dense_aug_np = None
-                if lms_dense_c is not None:
-                    sc_dense = scale_crop(
-                        image_c, crop_size, h_offset, w_offset, scale_factor,
-                        K=None, normals_image=None, debug=False,
-                        landmarks=lms_dense_c, depth_map=None
-                    )
-                    lms_dense_aug_np = sc_dense['landmarks']
-            else:
-                # no geometric aug
-                image_aug_np   = image_c.copy()
-                K_aug_np       = K_c.copy()
-                normals_aug_np = normals_c.copy() if normals_c is not None else None
-                depth_aug_np   = depth_c.copy() if depth_c is not None else None
-                lms_dense_aug_np = lms_dense_c.copy() if lms_dense_c is not None else None
-
-            # 3) brightness jitter AFTER geometry
-            if perturbation is None:
-                perturb = 1.0 + self.brightness_sigma * np.random.randn(1, 1, 3)
-            else:
-                perturb = perturbation
-            image_aug_np = np.clip(image_aug_np * perturb, 0.0, 1.0)
-
-            # 4) normalize RGB to your stats
-            image_c_norm   = self.normalize_image(image_c)
-            image_aug_norm = self.normalize_image(image_aug_np)
-
-            # 5) pack tensors (NO image_resize_factor here — fixed output size has priority)
-            image_t          = torch.from_numpy(image_c_norm.astype(np.float32)).permute(2, 0, 1).contiguous()
-            image_aug_t      = torch.from_numpy(image_aug_norm.astype(np.float32)).permute(2, 0, 1).contiguous()
-            intrinsics_t     = torch.from_numpy(K_c.astype(np.float32))
-            intrinsics_aug_t = torch.from_numpy(K_aug_np.astype(np.float32))
-            extrinsics_t     = torch.from_numpy(camera['extrinsics'].astype(np.float32))
-            radial_t         = torch.from_numpy(camera['radial_distortion'].astype(np.float32))
-            center_t         = torch.from_numpy(camera['camera_center'].astype(np.float32))
-
-            normals_t        = torch.from_numpy(normals_c.astype(np.float32)).permute(2,0,1).contiguous() if normals_c is not None else None
-            normals_aug_t    = torch.from_numpy(normals_aug_np.astype(np.float32)).permute(2,0,1).contiguous() if normals_aug_np is not None else normals_t
-
-            depth_t          = torch.from_numpy(depth_c.astype(np.float32))[:, :, None] if depth_c is not None else None
-            depth_aug_t      = torch.from_numpy(depth_aug_np.astype(np.float32))[:, :, None] if depth_aug_np is not None else depth_t
-
-            lms_dense_t      = torch.from_numpy(lms_dense_c.astype(np.float32)) if lms_dense_c is not None else None
-            lms_dense_aug_t  = torch.from_numpy(lms_dense_aug_np.astype(np.float32)) if lms_dense_aug_np is not None else lms_dense_t
-
-            out = {
-                'image': image_t,
-                'image_augmented': image_aug_t,
-                'intrinsics': intrinsics_t,
-                'intrinsics_augmented': intrinsics_aug_t,
-                'extrinsics': extrinsics_t,
-                'radial_distortion': radial_t,
-                'camera_center': center_t,
-                'normals_image': normals_t,
-                'normals_image_augmented': normals_aug_t,
-                'depth_map': depth_t,
-                'depth_map_augmented': depth_aug_t,
-                'dense_landmarks': lms_dense_t,
-                'dense_landmarks_augmented': lms_dense_aug_t,
-                'perturbation': perturb,
-            }
-            return out
-
-        # ============================================================
-        # PATH B (fallback): original random scale+crop augmentation
-        # ============================================================
-        if not DISABLE_AUGM:
-            np.random.seed()
-            crop_size = (h, w)  # full-res crop window
-            scale_factor = self.scale_min + (self.scale_max - self.scale_min) * np.random.random()
-            h_offset, w_offset = get_random_crop_offsets(crop_size, height=h, width=w)
-
-            normals_image = normals_image * 2.0 - 1.0 if normals_image is not None else None # bring to [-1,1] for warp ops
-            # print("WAHG!")
-
-            sc = scale_crop(
+        dense_landmarks_augmented = None
+        if dense_landmarks is not None:
+            sc_dense = scale_crop(
                 image, crop_size, h_offset, w_offset, scale_factor,
-                K=camera['intrinsics'], normals_image=normals_image, debug=False,
-                debug_root='debug_/', landmarks=None, depth_map=depth_img
+                K=None, normals_image=None, debug=False, debug_root=None,
+                landmarks=dense_landmarks, depth_map=None
             )
-            image_augmented = sc['image']
-            intrinsics_augmented = sc['K']
-            normals_augmented = sc['normals_image']
-            depth_augmented = sc['depth_map']
+            dense_landmarks_augmented = sc_dense['landmarks']
 
-            dense_landmarks_augmented = None
-            if dense_landmarks is not None:
-                sc_dense = scale_crop(
-                    image, crop_size, h_offset, w_offset, scale_factor,
-                    K=None, normals_image=None, debug=False, debug_root=None,
-                    landmarks=dense_landmarks, depth_map=None
-                )
-                dense_landmarks_augmented = sc_dense['landmarks']
+        dense_mediapipe_landmarks_augmented = None
+        if dense_mediapipe_landmarks is not None:
+            sc_dense_mp = scale_crop(
+                image, crop_size, h_offset, w_offset, scale_factor,
+                K=None, normals_image=None, debug=False, debug_root=None,
+                landmarks=dense_mediapipe_landmarks, depth_map=None
+            )
+            dense_mediapipe_landmarks_augmented = sc_dense_mp['landmarks']
 
-            dense_mediapipe_landmarks_augmented = None
-            if dense_mediapipe_landmarks is not None:
-                sc_dense_mp = scale_crop(
-                    image, crop_size, h_offset, w_offset, scale_factor,
-                    K=None, normals_image=None, debug=False, debug_root=None,
-                    landmarks=dense_mediapipe_landmarks, depth_map=None
-                )
-                dense_mediapipe_landmarks_augmented = sc_dense_mp['landmarks']
+        dense_fan_landmarks_augmented = None
+        if dense_fan_landmarks is not None:
+            sc_dense_fan = scale_crop(
+                image, crop_size, h_offset, w_offset, scale_factor,
+                K=None, normals_image=None, debug=False, debug_root=None,
+                landmarks=dense_fan_landmarks, depth_map=None
+            )
+            dense_fan_landmarks_augmented = sc_dense_fan['landmarks']
 
-            dense_fan_landmarks_augmented = None
-            if dense_fan_landmarks is not None:
-                sc_dense_fan = scale_crop(
-                    image, crop_size, h_offset, w_offset, scale_factor,
-                    K=None, normals_image=None, debug=False, debug_root=None,
-                    landmarks=dense_fan_landmarks, depth_map=None
-                )
-                dense_fan_landmarks_augmented = sc_dense_fan['landmarks']
-
-        else:
-            image_augmented = image.copy()
-            intrinsics_augmented = camera['intrinsics'].copy()
-            normals_augmented = normals_image.copy() if normals_image is not None else None
-            depth_augmented = depth_img.copy() if depth_img is not None else None
-            dense_landmarks_augmented = dense_landmarks.copy() if dense_landmarks is not None else None
-            dense_mediapipe_landmarks_augmented = dense_mediapipe_landmarks.copy() if dense_mediapipe_landmarks is not None else None
-            dense_fan_landmarks_augmented = dense_fan_landmarks.copy() if dense_fan_landmarks is not None else None
 
         # brightness jitter AFTER geometry
         if perturbation is None:
