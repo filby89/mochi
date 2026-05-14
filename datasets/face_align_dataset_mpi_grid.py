@@ -13,10 +13,7 @@ For comments or questions, please email us at tempeh@tue.mpg.de
 """
 
 import os
-import math
-import random
 import imageio
-from skimage.transform import rescale, resize
 
 import numpy as np
 import torch
@@ -24,32 +21,27 @@ import torch.utils.data as data
 
 from psbody.mesh import Mesh
 from utils import utils
-from utils.data_augment import get_random_crop_offsets, scale_crop, pad_img_and_intrinsics
+from utils.data_augment import get_random_crop_offsets, scale_crop
 import cv2
 
 class FaceAlignDatasetMPI(data.Dataset):
     def __init__(self, 
                 data_list_fname,
-                dataset_root_dir='',
                 image_dir='',
                 image_resize_factor = 1,
                 calibration_dir='',
                 scan_dir='',
                 normals_dir='',
                 registration_root_dir='',   
-                global_registration_root_dir='',
                 depths_dir='',
-                mesh_sampler=None,
                 # data augmentation parameters
                 scale_min=0.9, # random scaling
                 scale_max=1.1,
                 brightness_sigma=0.1 / 3.0, # random brightness perturbation  
-                scan_vertex_count=10000,
                 image_file_ext='png',
                 dense_landmarks_dir='',
                 dense_semantic_landmarks_dir='',
-                to_meters=False,
-                camera_names=None
+                to_meters=False
                 ):
         super().__init__()
        
@@ -71,14 +63,11 @@ class FaceAlignDatasetMPI(data.Dataset):
         self.scale_max = scale_max
         self.brightness_sigma = brightness_sigma # random brightness perturbation
 
-        self.mesh_sampler = mesh_sampler
-        self.scan_vertex_count = scan_vertex_count
-        self.registration_root_dir = registration_root_dir
-        self._camera_names_override = list(camera_names) if camera_names is not None else None
-
         if os.path.exists(image_dir):
             self.img_dir = lambda subject, sequence, frame : os.path.join(image_dir, subject, sequence, frame)
             self.img_fname_grid = lambda subject, sequence, frame : os.path.join(self.img_dir(subject, sequence, frame), '%s.%s.%s' % (sequence, frame, image_file_ext))
+        else:
+            raise RuntimeError('Invalid image directory')
 
         if os.path.exists(normals_dir):
             self.normals_img_dir = lambda subject, sequence, frame : os.path.join(normals_dir, subject, sequence, frame)
@@ -116,28 +105,17 @@ class FaceAlignDatasetMPI(data.Dataset):
 
         self.scan_fname = ''
         if os.path.exists(scan_dir):
-            if return_full_scan:
-                if "scan" in scan_dir.lower():
-                    self.scan_fname = lambda subject, sequence, frame : os.path.join(scan_dir, subject, sequence, '%s.%s.obj' % (sequence, frame))
-                else:
-                    self.scan_fname = lambda subject, sequence, frame : os.path.join(scan_dir, subject, sequence, '%s.%s.npz' % (sequence, frame))
+            if "scan" in scan_dir.lower():
+                self.scan_fname = lambda subject, sequence, frame : os.path.join(scan_dir, subject, sequence, '%s.%s.obj' % (sequence, frame))
             else:
-                self.scan_fname = lambda subject, sequence, frame : os.path.join(scan_dir, subject, sequence, '%s.%s.npy' % (sequence, frame))
-        elif os.path.exists(dataset_root_dir):
-            self.scan_fname = lambda subject, sequence, frame : os.path.join(dataset_root_dir, subject, sequence, 'meshes', '%s.%s.obj' % (sequence, frame))
+                self.scan_fname = lambda subject, sequence, frame : os.path.join(scan_dir, subject, sequence, '%s.%s.npz' % (sequence, frame))
              
         self.registration_fname = ''
         if os.path.exists(registration_root_dir):
             self.registration_fname = lambda subject, sequence, frame : os.path.join(registration_root_dir, subject, sequence, '%s.%s.ply' % (sequence, frame))
 
-        self.global_mesh_fname = ''
-        if os.path.exists(global_registration_root_dir):
-            self.global_mesh_fname = lambda subject, sequence, frame : os.path.join(global_registration_root_dir, subject, sequence, '%s.%s.ply' % (sequence, frame))
-
 
         self.image_resize_factor = image_resize_factor
-        self.output_image_height = output_image_height
-        self.output_image_width  = output_image_width
 
         self.data_size = len(self.split_list)
 
@@ -180,18 +158,8 @@ class FaceAlignDatasetMPI(data.Dataset):
         color_camera_dense_landmarks_masks = []
         color_camera_dense_landmarks_masks_augmented = []
 
-        color_camera_dense_fan_landmarks = []
-        color_camera_dense_fan_landmarks_augmented = []
         color_camera_dense_mediapipe_landmarks = []
         color_camera_dense_mediapipe_landmarks_augmented = []
-
-        if self._camera_names_override is not None:
-            color_cameras = self._camera_names_override
-        else:
-            color_cameras = [
-                '23_C','24_C','25_C','26_C','27_C',
-                '28_C','29_C','30_C'
-            ]
 
         calib = np.load(self.calibration_img_fname_grid(subject, sequence, frame))
         
@@ -210,13 +178,11 @@ class FaceAlignDatasetMPI(data.Dataset):
         else:
             dense_landmarks = None
 
-        dense_fan_landmarks = None
         dense_mediapipe_landmarks = None
         if getattr(self, 'dense_semantic_landmarks_fname', None) is not None:
             try:
                 dense_semantic_path = self.dense_semantic_landmarks_fname(subject, sequence, frame)
                 dense_semantic_data = np.load(dense_semantic_path) if os.path.exists(dense_semantic_path) else None
-                dense_fan_landmarks = dense_semantic_data['fan_landmarks']
                 dense_mediapipe_landmarks = dense_semantic_data['mediapipe_landmarks']
             except Exception as e:
                 print('Error loading dense semantic landmarks:', e)
@@ -243,30 +209,7 @@ class FaceAlignDatasetMPI(data.Dataset):
                 'centers': calib['centers'][i]
             }
 
-            # pad the image and intrinsics to match ViT patch size
-            if self.pad_to_vit or PAD_TO_VIT:
-                multiple = max(1, int(self.pad_multiple))
-                resize_factor = max(1, int(self.image_resize_factor))
-                target_h = int(math.ceil(frame_img.shape[0] / (multiple * resize_factor)) * (multiple * resize_factor))
-                target_w = int(math.ceil(frame_img.shape[1] / (multiple * resize_factor)) * (multiple * resize_factor))
-                pad_results = pad_img_and_intrinsics(
-                    frame_img,
-                    calib_img['intrinsics'],
-                    normals_cropped=normals_img,
-                    depth_img=depth_img,
-                    dense_landmarks=dense_landmarks[i] if dense_landmarks is not None else None,
-                    out_size=(target_h, target_w),
-                )
-
-                frame_img = pad_results['image']
-                calib_img['intrinsics'] = pad_results['K']
-                normals_img = pad_results['normals_image']
-                dense_landmarks_view = pad_results['dense_landmarks']
-                depth_img = pad_results['depth_img']
-            else:
-                dense_landmarks_view = dense_landmarks[i] if dense_landmarks is not None else None
-
-            dense_fan_landmarks_view = dense_fan_landmarks[i] if dense_fan_landmarks is not None else None
+            dense_landmarks_view = dense_landmarks[i] if dense_landmarks is not None else None
             dense_mediapipe_landmarks_view = dense_mediapipe_landmarks[i] if dense_mediapipe_landmarks is not None else None
 
             img_with_camera = self.augment_img_with_camera(
@@ -279,7 +222,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                 perturbation=perturbation,
                 depth_img=depth_img,
                 dense_landmarks=dense_landmarks_view,
-                dense_fan_landmarks=dense_fan_landmarks_view,
                 dense_mediapipe_landmarks=dense_mediapipe_landmarks_view
             )
             perturbation = img_with_camera['perturbation'] 
@@ -299,8 +241,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                     color_camera_dense_landmarks_masks.append(dense_mask_all[i])
                     color_camera_dense_landmarks_masks_augmented.append(dense_mask_all[i])
 
-                    color_camera_dense_fan_landmarks.append(img_with_camera['dense_fan_landmarks'])
-                    color_camera_dense_fan_landmarks_augmented.append(img_with_camera['dense_fan_landmarks_augmented'])
                     color_camera_dense_mediapipe_landmarks.append(img_with_camera['dense_mediapipe_landmarks'])
                     color_camera_dense_mediapipe_landmarks_augmented.append(img_with_camera['dense_mediapipe_landmarks_augmented'])
 
@@ -338,8 +278,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                 color_camera_dense_landmarks_masks = torch.stack(color_camera_dense_landmarks_masks, dim=0) if len(color_camera_dense_landmarks_masks) > 0 else None
                 color_camera_dense_landmarks_masks_augmented = torch.stack(color_camera_dense_landmarks_masks_augmented, dim=0) if len(color_camera_dense_landmarks_masks_augmented) > 0 else None
 
-                color_camera_dense_fan_landmarks = torch.stack(color_camera_dense_fan_landmarks, dim=0) if len(color_camera_dense_fan_landmarks) > 0 else None
-                color_camera_dense_fan_landmarks_augmented = torch.stack(color_camera_dense_fan_landmarks_augmented, dim=0) if len(color_camera_dense_fan_landmarks_augmented) > 0 else None
                 color_camera_dense_mediapipe_landmarks = torch.stack(color_camera_dense_mediapipe_landmarks, dim=0) if len(color_camera_dense_mediapipe_landmarks) > 0 else None
                 color_camera_dense_mediapipe_landmarks_augmented = torch.stack(color_camera_dense_mediapipe_landmarks_augmented, dim=0) if len(color_camera_dense_mediapipe_landmarks_augmented) > 0 else None
 
@@ -369,8 +307,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             'color_images_depth_augmented': color_images_depth_augmented,
 
             'color_camera_dense_landmarks_masks_augmented': color_camera_dense_landmarks_masks_augmented,
-            'color_camera_dense_fan_landmarks': color_camera_dense_fan_landmarks,
-            'color_camera_dense_fan_landmarks_augmented': color_camera_dense_fan_landmarks_augmented,
             'color_camera_dense_mediapipe_landmarks': color_camera_dense_mediapipe_landmarks,
             'color_camera_dense_mediapipe_landmarks_augmented': color_camera_dense_mediapipe_landmarks_augmented,
 
@@ -385,22 +321,16 @@ class FaceAlignDatasetMPI(data.Dataset):
         # remove all None values
         data = {k: v for k, v in data.items() if v is not None}
 
-        if (self.scan_fname != '') and (self.scan_vertex_count > 0):
+        if self.scan_fname != '':
             scan_fname = self.scan_fname(subject, sequence, frame)
-            if self.return_full_scan:
-                try:
-                    data['v_scan'], data['f_scan'] = self.load_scan(scan_fname)
-                    data['v_scan'] = torch.from_numpy(data['v_scan'].astype(np.float32))
-                    if self.to_meters:
-                        data['v_scan'] /= 1000
-                    data['f_scan'] = torch.from_numpy(data['f_scan'].astype(np.int64))
-                except Exception as e:
-                    print(f'Unable to load scan {scan_fname}: {e}')
-                    # data['v_scan'] = None
-                    # data['f_scan'] = None
-            else:
-                v_sampled = self.load_scan_vertices(scan_fname)
-                data['v_scan'] = torch.from_numpy(np.array(v_sampled).astype(np.float32))
+            try:
+                data['v_scan'], data['f_scan'] = self.load_scan(scan_fname)
+                data['v_scan'] = torch.from_numpy(data['v_scan'].astype(np.float32))
+                if self.to_meters:
+                    data['v_scan'] /= 1000
+                data['f_scan'] = torch.from_numpy(data['f_scan'].astype(np.int64))
+            except Exception as e:
+                print(f'Unable to load scan {scan_fname}: {e}')
 
         # Load registration
         if self.registration_fname != '':
@@ -419,35 +349,15 @@ class FaceAlignDatasetMPI(data.Dataset):
                 data['v_registration'] = torch.from_numpy(v_registration.astype(np.float32))
                 data['f_registration'] = torch.from_numpy(f_registration.astype(np.int64))
 
-                if self.mesh_sampler is not None:
-                    for level in range(1,self.mesh_sampler.get_number_levels()):
-                        v_registration, f_registration = self.mesh_sampler.downsample(v_registration, return_faces=True)
-
                 data['v_reg_sampled'] = torch.from_numpy(v_registration.astype(np.float32))
                 data['f_reg_sampled'] = torch.from_numpy(f_registration.astype(np.int64))
 
-        if self.global_mesh_fname != '':
-            global_mesh_fname = self.global_mesh_fname(subject, sequence, frame)
-            if not os.path.exists(global_mesh_fname):
-                print(f'Global mesh not found {global_mesh_fname}')
-
-            try:
-                global_mesh = Mesh(filename=global_mesh_fname)
-                if not self.to_meters:
-                    global_mesh.v[:] *= 1000 # FLAME registrations are in meters, if to_meters is false, convert them to milimeters
-            except:
-                print(f'Unable to load global mesh {global_mesh_fname}')
-            data['v_reg_global'] = torch.from_numpy(global_mesh.v.astype(np.float32))
-            data['f_reg_global'] = torch.from_numpy(global_mesh.f.astype(np.int64)) 
-        else:
-            # If no data from the global stage are provided, use the downsampled registrations as global stage initialization. 
-            # Otherwise, load the global meshes.      
-            if 'v_reg_sampled' in data:
-                data['v_reg_global'] = data['v_reg_sampled']
-                data['f_reg_global'] = data['f_reg_sampled']
-            elif 'v_registration' in data:
-                data['v_reg_global'] = data['v_registration']
-                data['f_reg_global'] = data['f_registration']
+        if 'v_reg_sampled' in data:
+            data['v_reg_global'] = data['v_reg_sampled']
+            data['f_reg_global'] = data['f_reg_sampled']
+        elif 'v_registration' in data:
+            data['v_reg_global'] = data['v_registration']
+            data['f_reg_global'] = data['f_registration']
 
 
 
@@ -475,30 +385,6 @@ class FaceAlignDatasetMPI(data.Dataset):
 
             return scan['vertices'], scan['faces']
 
-    def load_scan_vertices(self, scan_fname):
-        if not os.path.exists(scan_fname):
-            raise RuntimeError(f'Scan not found {scan_fname}')
-
-        file_extension = utils.get_extension(scan_fname)
-        if file_extension.lower() in ['.obj', '.ply']:
-            try:
-                scan = Mesh(filename=scan_fname)
-            except:
-                raise RuntimeError(f'Unable to load scan {scan_fname}')
-
-            import trimesh
-            tr_mesh = trimesh.Trimesh(vertices=scan.v, faces=scan.f)
-            v_sampled, _ = trimesh.sample.sample_surface(tr_mesh, self.scan_vertex_count)
-            return v_sampled
-        elif file_extension.lower() in ['.npy']:
-            v_sampled = np.load(scan_fname)
-            scan_v_ids = np.arange(v_sampled.shape[0])
-            random.shuffle(scan_v_ids)
-            scan_v_ids = scan_v_ids[:np.min((v_sampled.shape[0], self.scan_vertex_count))]
-            return v_sampled[scan_v_ids]
-        else:
-            raise RuntimeError(f'Unknown scan file extension {file_extension}')
-
     def augment_img_with_camera(
         self,
         subject,
@@ -510,7 +396,6 @@ class FaceAlignDatasetMPI(data.Dataset):
         perturbation=None,
         depth_img=None,
         dense_landmarks=None,
-        dense_fan_landmarks=None,
         dense_mediapipe_landmarks=None,
     ):
         # ---- inputs to float [0,1] for geometric ops ----
@@ -560,16 +445,6 @@ class FaceAlignDatasetMPI(data.Dataset):
             )
             dense_mediapipe_landmarks_augmented = sc_dense_mp['landmarks']
 
-        dense_fan_landmarks_augmented = None
-        if dense_fan_landmarks is not None:
-            sc_dense_fan = scale_crop(
-                image, crop_size, h_offset, w_offset, scale_factor,
-                K=None, normals_image=None, debug=False, debug_root=None,
-                landmarks=dense_fan_landmarks, depth_map=None
-            )
-            dense_fan_landmarks_augmented = sc_dense_fan['landmarks']
-
-
         # brightness jitter AFTER geometry
         if perturbation is None:
             perturb = 1.0 + self.brightness_sigma * np.random.randn(1, 1, 3)
@@ -614,12 +489,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                 dense_landmarks_augmented[:, 0] /= self.image_resize_factor
                 dense_landmarks_augmented[:, 1] /= self.image_resize_factor
 
-            if dense_fan_landmarks is not None:
-                dense_fan_landmarks[:, 0] /= self.image_resize_factor
-                dense_fan_landmarks[:, 1] /= self.image_resize_factor
-            if dense_fan_landmarks_augmented is not None:
-                dense_fan_landmarks_augmented[:, 0] /= self.image_resize_factor
-                dense_fan_landmarks_augmented[:, 1] /= self.image_resize_factor
             if dense_mediapipe_landmarks is not None:
                 dense_mediapipe_landmarks[:, 0] /= self.image_resize_factor
                 dense_mediapipe_landmarks[:, 1] /= self.image_resize_factor
@@ -636,8 +505,6 @@ class FaceAlignDatasetMPI(data.Dataset):
 
         dense_landmarks_t = torch.from_numpy(dense_landmarks.astype(np.float32)) if dense_landmarks is not None else None
         dense_landmarks_aug_t = torch.from_numpy(dense_landmarks_augmented.astype(np.float32)) if dense_landmarks_augmented is not None else dense_landmarks_t
-        dense_fan_landmarks_t = torch.from_numpy(dense_fan_landmarks.astype(np.float32)) if dense_fan_landmarks is not None else None
-        dense_fan_landmarks_aug_t = torch.from_numpy(dense_fan_landmarks_augmented.astype(np.float32)) if dense_fan_landmarks_augmented is not None else dense_fan_landmarks_t
         dense_mediapipe_landmarks_t = torch.from_numpy(dense_mediapipe_landmarks.astype(np.float32)) if dense_mediapipe_landmarks is not None else None
         dense_mediapipe_landmarks_aug_t = torch.from_numpy(dense_mediapipe_landmarks_augmented.astype(np.float32)) if dense_mediapipe_landmarks_augmented is not None else dense_mediapipe_landmarks_t
 
@@ -676,11 +543,6 @@ class FaceAlignDatasetMPI(data.Dataset):
                 'dense_landmarks_augmented': dense_landmarks_aug_t,
             })
 
-        if dense_fan_landmarks_t is not None:
-            out.update({
-                'dense_fan_landmarks': dense_fan_landmarks_t,
-                'dense_fan_landmarks_augmented': dense_fan_landmarks_aug_t,
-            })
         if dense_mediapipe_landmarks_t is not None:
             out.update({
                 'dense_mediapipe_landmarks': dense_mediapipe_landmarks_t,
@@ -721,131 +583,3 @@ class FaceAlignDatasetMPI(data.Dataset):
                 return image * self.std.view(1,3,1,1).to(image.device) + self.mean.view(1,3,1,1).to(image.device)
         else:
             raise RuntimeError(f"unrecognizable image type {type(image)}")
-def crop_square_by_depth_and_update_K(
-    img,
-    K=None,
-    depth=None,
-    normals=None,
-    dense_landmarks=None,
-    target_size=(308, 308),      # (H, W) — can be rectangular; square recommended
-    depth_nonzero_eps=0.0,       # treat values > eps as valid depth
-    bbox_margin=1.15,            # enlarge bbox by this factor
-    min_bbox_px=16,              # fallback bbox size if too small
-    border_mode=cv2.BORDER_CONSTANT,
-    border_value_img=0,
-    border_value_normals=0,
-    border_value_depth=0
-):
-    """
-    Returns:
-        {
-          'image': np.ndarray(Ht, Wt, 3), float32 in [0,1] if input was,
-          'normals_image': np.ndarray(Ht, Wt, C) or None,
-          'depth_img': np.ndarray(Ht, Wt) or None,
-          'K': np.ndarray(3,3) or None,
-          'transform': np.ndarray(3,3)  # pixel homography U applied to go img->cropped
-        }
-    """
-    assert img.ndim == 3 and img.shape[2] == 3, f"img expected HxWx3, got {img.shape}"
-    H, W = img.shape[:2]
-    Ht, Wt = target_size
-
-    # ---------- 1) make a bbox from depth ----------
-    # If no depth, fallback to entire image.
-    if depth is not None:
-        assert depth.ndim in (2,3), "depth should be HxW or HxWx1"
-        d = depth.squeeze()
-        valid = d > depth_nonzero_eps
-        ys, xs = np.where(valid)
-        if ys.size > 0:
-            y0, y1 = ys.min(), ys.max()
-            x0, x1 = xs.min(), xs.max()
-        else:
-            # fallback: entire image
-            y0, y1, x0, x1 = 0, H-1, 0, W-1
-    else:
-        y0, y1, x0, x1 = 0, H-1, 0, W-1
-
-    # ---------- 2) expand to a square around center ----------
-    bw = max(1, x1 - x0 + 1)
-    bh = max(1, y1 - y0 + 1)
-    # expand bbox a bit
-    bw = max(bw, min_bbox_px)
-    bh = max(bh, min_bbox_px)
-    size = max(bw, bh) * float(bbox_margin)
-
-    # center of bbox
-    cx = (x0 + x1) * 0.5
-    cy = (y0 + y1) * 0.5
-
-    # square window edges in original pixels (float)
-    half = size * 0.5
-    left   = cx - half
-    top    = cy - half
-
-    # ---------- 3) build the similarity (scale+translate) transform ----------
-    # Map the square window [left, top, size] to [0..Wt-1, 0..Ht-1].
-    # No rotation, just scale+translate:
-    sx = (Wt - 1) / size
-    sy = (Ht - 1) / size
-    tx = -left
-    ty = -top
-
-    # 3x3 homography (pixel -> pixel)
-    U = np.array([
-        [sx,  0,  sx * tx],
-        [ 0, sy,  sy * ty],
-        [ 0,  0,        1]
-    ], dtype=np.float64)
-
-    # 2x3 for warpAffine
-    A = U[:2, :]
-
-    # ---------- 4) warp image / normals / depth ----------
-    # NOTE: If your img is in [0,1] float, cv2.warpAffine preserves dtype; pick interpolation accordingly.
-    img_out = cv2.warpAffine(img, A, (Wt, Ht),
-                             flags=cv2.INTER_LINEAR,
-                             borderMode=border_mode,
-                             borderValue=border_value_img)
-
-    normals_out = None
-    if normals is not None:
-        normals_out = cv2.warpAffine(normals, A, (Wt, Ht),
-                                     flags=cv2.INTER_LINEAR,
-                                     borderMode=border_mode,
-                                     borderValue=border_value_normals)
-
-    depth_out = None
-    if depth is not None:
-        # Keep depth discrete/unaltered where possible (nearest)
-        depth_squeeze = depth.squeeze()
-        depth_out = cv2.warpAffine(depth_squeeze, A, (Wt, Ht),
-                                   flags=cv2.INTER_NEAREST,
-                                   borderMode=cv2.BORDER_CONSTANT,
-                                   borderValue=border_value_depth)
-
-    # ---------- 5) transform landmarks ----------
-    landmarks_dense_out = None
-    if dense_landmarks is not None:
-        if dense_landmarks.shape[1] == 2:
-            ones = np.ones((dense_landmarks.shape[0], 1), dtype=dense_landmarks.dtype)
-            P = np.hstack([dense_landmarks, ones])        # Nx3
-            Pp = (U @ P.T).T                              # Nx3
-            landmarks_dense_out = Pp[:, :2]
-        else:
-            raise ValueError("dense_landmarks must be (N,2)")
-
-    # ---------- 6) update intrinsics ----------
-    K_out = None
-    if K is not None:
-        # Left-multiply pixel transform: x' = U * (K * X_cam)
-        K_out = (U @ K).astype(np.float64)
-
-    return {
-        'image': img_out,
-        'normals_image': normals_out,
-        'depth_img': depth_out,
-        'K': K_out if K is not None else None,
-        'transform': U,
-        'landmarks_dense': landmarks_dense_out
-    }

@@ -6,8 +6,8 @@ cd "$(dirname "$0")/.."
 source scripts/_data_paths.sh
 
 python -m trainer.train \
-  -eid public_release_trash/coarse_nodifrs \
-  -print-freq 100 -val-freq 20000 -vis-freq 100 \
+  -eid public_release/coarse_nodifrs \
+  -print-freq 100 -val-freq 100000 -vis-freq 500 \
   -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
   --num-iterations 300000 \
   -wpointr 0 -wp2s 0 -wlandd 1 \

@@ -74,7 +74,6 @@ your output paths:
 ```bash
 -tdl  /path/to/your_train_data_list.json
 -vdl  /path/to/your_val_data_list.json
---dataset-directory   <famos_root>
 --scan-directory      <famos_root>/meshes_npz
 --processed-directory <famos_root>/registrations
 --image-directory       <OUTPUT_ROOT>/color_images_v2
@@ -82,9 +81,8 @@ your output paths:
 --depths-image-directory   <OUTPUT_ROOT>/color_depth
 --calibration-directory    <OUTPUT_ROOT>/color_cameras
 --dense-landmarks-dir      <OUTPUT_ROOT>/color_dense_landmarks
+--dense-semantic-landmarks-dir <OUTPUT_ROOT>/color_dense_semantic_landmarks
 ```
-
-Stage 1 (pretraining) does not require depth / normal grids; stages 2–4 do.
 
 ## 4. Sanity check
 
@@ -103,6 +101,7 @@ ds = FaceAlignDatasetMPI(
     normals_dir='<OUTPUT_ROOT>/color_normals_numpy',
     depths_dir='<OUTPUT_ROOT>/color_depth',
     dense_landmarks_dir='<OUTPUT_ROOT>/color_dense_landmarks',
+    dense_semantic_landmarks_dir='<OUTPUT_ROOT>/color_dense_semantic_landmarks',
     image_resize_factor=2,
     image_file_ext='png',
 )

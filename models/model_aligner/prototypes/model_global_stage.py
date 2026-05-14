@@ -23,10 +23,7 @@ class Model(BaseModel):
         super(Model, self).__init__()
 
         self.args = args
-        if args.add_norm_as_input:
-            self.input_ch = 6
-        else:
-            self.input_ch = 3
+        self.input_ch = 3
 
         self.descriptor_dim = args.descriptor_dim
         self.number_points = min(args.number_sample_points)

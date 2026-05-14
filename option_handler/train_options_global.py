@@ -79,11 +79,8 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='data', abbr='templ-name', name='template-fname', type=str, default='./assets/template/sampling_template.obj')
         self.add_arg(cate='data', abbr='vmask-name', name='vertex-mask-fname', type=str, default='./assets/template/vertex_masks2.npz')
         self.add_arg(cate='data', abbr='b-sigma', name='brightness-sigma', type=float, default=0.33)
-        self.add_arg(cate='data', abbr='v_scan', name='scan-vertex-count', type=int, default=20000)
-
         self.add_arg(cate='data', abbr='tdl', name='train-data-list-fname', type=str, default='')
         self.add_arg(cate='data', abbr='vdl', name='val-data-list-fname', type=str, default='')
-        self.add_arg(cate='data', abbr='data-dir', name='dataset-directory', type=str, default='')
         self.add_arg(cate='data', abbr='scan-dir', name='scan-directory', type=str, default='')
         self.add_arg(cate='data', abbr='reg-dir', name='processed-directory', type=str, default='')
         self.add_arg(cate='data', abbr='image-dir', name='image-directory', type=str, default='')
@@ -162,6 +159,8 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='model', abbr='refine-lr', name='refinement-lr', type=float, default=1e-4)
         self.add_arg(cate='model', abbr='refine-v', name='refine-vis', type=bool, default=False)
         self.add_arg(cate='model', abbr='refine-vis-freq', name='refine-visualization-freq', type=int, default=1)
+
+        self.add_arg( cate='model', abbr='eval', name='evaluate', type=bool, default=False)
 
         self.initialize_default_parameters()
 

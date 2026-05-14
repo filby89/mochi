@@ -215,15 +215,11 @@ class Trainer(BaseTrainer):
         from datasets.face_align_dataset_mpi_grid import FaceAlignDatasetMPI as DatasetCls
 
         common_kwargs = dict(
-            dataset_root_dir=self.args.dataset_directory,
             image_dir=self.args.image_directory,
             calibration_dir=self.args.calibration_directory,
             scan_dir=self.args.scan_directory,
-            return_full_scan="meshes" in self.args.scan_directory,
             registration_root_dir=self.args.processed_directory,
             image_resize_factor=self.args.image_resize_factor,
-            mesh_sampler=None,
-            scan_vertex_count=self.args.scan_vertex_count,
             brightness_sigma=self.args.brightness_sigma,
             image_file_ext=self.args.image_file_ext,
             dense_landmarks_dir=self.args.dense_landmarks_dir,
@@ -231,8 +227,6 @@ class Trainer(BaseTrainer):
             normals_dir=self.args.normals_image_directory,
             to_meters=self.args.to_meters,
             depths_dir=self.args.depths_image_directory,
-            output_image_height=None,
-            output_image_width=None,
         )
 
         self.dataset_train = DatasetCls(
@@ -348,15 +342,8 @@ class Trainer(BaseTrainer):
         self.landmarks_dense_uv[..., 1] = self.landmarks_dense_uv[..., 1]/(self.inputs['images'].shape[-2]-1) * 2.0 - 1.0
 
 
-        dense_fan_landmarks_key = 'color_camera_dense_fan_landmarks' + suffix
-        self.landmarks_dense_fan = data[dense_fan_landmarks_key][:, views].to(self.device)
         dense_mediapipe_landmarks_key = 'color_camera_dense_mediapipe_landmarks' + suffix
         self.landmarks_dense_mediapipe = data[dense_mediapipe_landmarks_key][:, views].to(self.device)
-
-
-        self.landmarks_dense_fan_uv = self.landmarks_dense_fan.clone()
-        self.landmarks_dense_fan_uv[..., 0] = self.landmarks_dense_fan_uv[..., 0]/(self.inputs['images'].shape[-1]-1) * 2.0 - 1.0
-        self.landmarks_dense_fan_uv[..., 1] = self.landmarks_dense_fan_uv[..., 1]/(self.inputs['images'].shape[-2]-1) * 2.0 - 1.0
 
         self.landmarks_dense_mediapipe_uv = self.landmarks_dense_mediapipe.clone()
         self.landmarks_dense_mediapipe_uv[..., 0] = self.landmarks_dense_mediapipe_uv[..., 0]/(self.inputs['images'].shape[-1]-1) * 2.0 - 1.0
@@ -958,16 +945,6 @@ class Trainer(BaseTrainer):
         all_losses['landmarks_loss_dense_out'] = landmarks_loss_dense_out
         self.global_landmarks_projected_dense_out = global_landmarks_projected_dense_out
 
-
-        # landmarks_loss_dense_fan_out, global_landmarks_projected_dense_fan_out = self.compute_landmarks_loss(
-        #     self.global_points,
-        #     suffix="_fan",
-        #     gt_landmarks=self.landmarks_dense_fan_uv if self.args.to_meters else self.landmarks_dense_fan,
-        #     # gt_mask=self.landmarks_dense_fan_mask
-        # )
-        # all_losses['landmarks_loss_dense_fan_out'] = landmarks_loss_dense_fan_out
-        # self.global_landmarks_projected_dense_fan_out = global_landmarks_projected_dense_fan_out
-
         landmarks_loss_dense_mediapipe_out, global_landmarks_projected_dense_mediapipe_out = self.compute_landmarks_loss(
             self.global_points,
             suffix="_mediapipe",
@@ -1115,17 +1092,6 @@ class Trainer(BaseTrainer):
             self.global_landmarks_projected_dense = global_landmarks_projected_dense
 
             self.pliks_out['V_flame_mm'] = V_flame_mm
-            
-
-            # landmarks_loss_dense_fan, global_landmarks_projected_dense_fan = self.compute_landmarks_loss(
-            #     V_flame_mm,
-            #     suffix="_fan",
-            #     gt_landmarks=self.landmarks_dense_fan_uv if self.args.to_meters else self.landmarks_dense_fan,
-            #     # gt_mask=self.landmarks_dense_fan_mask
-            # )
-            # all_losses['landmarks_loss_dense_fan'] = landmarks_loss_dense_fan
-            # self.global_landmarks_projected_dense_fan = global_landmarks_projected_dense_fan
-
             landmarks_loss_dense_mediapipe, global_landmarks_projected_dense_mediapipe = self.compute_landmarks_loss(
                 self.global_points,
                 suffix="_mediapipe",
@@ -1435,21 +1401,10 @@ class Trainer(BaseTrainer):
                     if vis_landmarks:
                         vis_image = input_image.copy()
                         vis_image_pred = input_image.copy()
-                        # print(self.landmarks_dense_fan.shape)
-                        # for landmark in self.landmarks_dense_fan[idx][relative_view_id]:
-                        # landmarks_dense_fan = to_numpy(self.landmarks_dense_fan[idx][relative_view_id])
-                        # for i in range(landmarks_dense_fan.shape[0]):
-                            # vis_image = cv2.circle(vis_image, (int(landmarks_dense_fan[i][0]), int(landmarks_dense_fan[i][1])), 2, (0, 0, 255), -1)
 
                         landmarks_dense_mediapipe = to_numpy(self.landmarks_dense_mediapipe[idx][relative_view_id])
                         for i in range(landmarks_dense_mediapipe.shape[0]):
                             vis_image = cv2.circle(vis_image, (int(landmarks_dense_mediapipe[i][0]), int(landmarks_dense_mediapipe[i][1])), 2, (255, 0, 255), -1)
-
-                        # projected_landmarks_fan = None
-                        # if hasattr(self, 'global_landmarks_projected_dense_fan_out') and self.global_landmarks_projected_dense_fan_out is not None:
-                        #     projected_landmarks_fan = to_numpy(self.global_landmarks_projected_dense_fan_out[idx][relative_view_id])
-                        #     for i in range(projected_landmarks_fan.shape[0]):
-                        #         vis_image_pred = cv2.circle(vis_image_pred, (int(projected_landmarks_fan[i][0]), int(projected_landmarks_fan[i][1])), 2, (255, 0, 0), -1)
 
                         projected_landmarks_mediapipe = None
                         if hasattr(self, 'global_landmarks_projected_dense_mediapipe') and self.global_landmarks_projected_dense_mediapipe is not None:

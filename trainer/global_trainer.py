@@ -10,6 +10,7 @@ from utils.edge_loss import EdgeLoss
 from utils.mesh_helper import MeshHelper, pointmap_to_rgb, depth_to_pointmap_robust
 from trainer.base_trainer import BaseTrainer
 from option_handler.train_options_global import TrainOptions
+from datasets.face_align_dataset_mpi_grid import FaceAlignDatasetMPI
 from models.FLAME.FLAME import FLAME
 import math
 import cv2
@@ -153,14 +154,11 @@ class Trainer(BaseTrainer):
 
     def register_dataset(self):
         common_kwargs = dict(
-            dataset_root_dir=self.args.dataset_directory,
             image_dir=self.args.image_directory,
             calibration_dir=self.args.calibration_directory,
             scan_dir=self.args.scan_directory,
             registration_root_dir=self.args.processed_directory,
             image_resize_factor=self.args.image_resize_factor,
-            mesh_sampler=None,
-            scan_vertex_count=self.args.scan_vertex_count,
             brightness_sigma=self.args.brightness_sigma,
             image_file_ext=self.args.image_file_ext,
             dense_landmarks_dir=self.args.dense_landmarks_dir,
@@ -584,7 +582,7 @@ class Trainer(BaseTrainer):
         if self.args.enable_local:
             global_vertex_losses = self.compute_vertex_losses(self.global_points, self.coarse_points)
         
-        all_losses.update(global_vertex_losses)
+            all_losses.update(global_vertex_losses)
 
         if self.args.enable_diff_rendering:
             global_rendering_losses, global_predictions = self.compute_rendering_losses(self.global_points)
@@ -1111,10 +1109,6 @@ class Trainer(BaseTrainer):
                     if reconstructed_vertices_pliks is not None:
                         pliks_reconstruction_rendering = render_mesh(vertices=reconstructed_vertices_pliks, faces=faces_pred, vertex_colors=None, needs_projection=True, **camera_args)
 
-                    pliks_flame_reconstruction_rendering = None
-                    if reconstructed_vertices_pliks_flame is not None:
-                        pliks_flame_reconstruction_rendering = render_mesh(vertices=reconstructed_vertices_pliks_flame, faces=faces_pred, vertex_colors=None, needs_projection=True, **camera_args)
-
                     vertex_colors_scan_pliks = None
                     if reconstructed_vertices_pliks is not None:
                         pliks_error_rendering = render_mesh(vertices=scan_vertices, faces=self.data['f_scan'][idx], vertex_colors=vertex_colors_scan_pliks, **camera_args)
@@ -1131,11 +1125,6 @@ class Trainer(BaseTrainer):
                     if vis_landmarks:
                         vis_image = input_image.copy()
                         vis_image_pred = input_image.copy()
-                        # print(self.landmarks_dense_fan.shape)
-                        # for landmark in self.landmarks_dense_fan[idx][relative_view_id]:
-                        landmarks_dense_fan = to_numpy(self.landmarks_dense_fan[idx][relative_view_id])
-                        for i in range(landmarks_dense_fan.shape[0]):
-                            vis_image = cv2.circle(vis_image, (int(landmarks_dense_fan[i][0]), int(landmarks_dense_fan[i][1])), 2, (0, 0, 255), -1)
 
                         landmarks_dense_mediapipe = to_numpy(self.landmarks_dense_mediapipe[idx][relative_view_id])
                         for i in range(landmarks_dense_mediapipe.shape[0]):
@@ -1201,10 +1190,8 @@ class Trainer(BaseTrainer):
                         *([(point_maps_pred, "Pred PointMap")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
                         *([(point_maps_gt, "GT PointMap")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
                         *([(point_map_loss_per_pixel_vis, "PointMap Loss")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
-                        *([(masked_image, "Masked Input")] if self.args.enable_smirk_loss else []),
                         *([(pliks_reconstruction_rendering, "PLIKS Recon")] if pliks_reconstruction_rendering is not None else []),   # <-- NEW
                         *([(pliks_error_rendering, "PLIKS Error")] if reconstructed_vertices_pliks is not None else []),  # <-- NEW
-                        *([(pliks_flame_reconstruction_rendering, "PLIKS FLAME Recon")] if pliks_flame_reconstruction_rendering is not None else []),  # <-- NEW
                         *([(vis_image, "Input Image with Landmarks")] if 'vis_image' in locals() else []),
                         *([(vis_image_pred, "Input Image with Predicted Landmarks")] if 'vis_image_pred' in locals() else []),
 
