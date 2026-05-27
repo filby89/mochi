@@ -17,26 +17,16 @@
   <a href="https://sites.google.com/site/bolkartt/" target="_blank" rel="noopener noreferrer">Timo Bolkart</a>
 </p>
 
-<sub>CVPR 2026</sub>
+<h4>CVPR 2026</h4>
 
 </div>
 
 <p align="center">
-  <img src="media/teaser.jpg" alt="MOCHI teaser" width="100%">
+  <img src="media/teaser.png" alt="MOCHI teaser" width="100%">
   <br>
-  <em>MOCHI predicts topologically consistent 3D face meshes in dense semantic correspondence directly from multi-view images, and a test-time optimization (MOCHI-TTO) pass further sharpens the geometry.</em>
+  <em>MOCHI predicts topologically consistent 3D face meshes in dense semantic correspondence directly from calibrated multi-view images, and a test-time optimization (MOCHI-TTO) pass further sharpens the geometry.</em>
 </p>
 
----
-
-MOCHI is a framework for predicting 3D face meshes from multi-view images **without requiring
-registered training data**. It enforces topological consistency through a pseudo-linear inverse
-kinematic solver (**PLIKS**), guides semantic alignment with dense keypoints from a
-synthetic-data-trained landmark detector, and is supervised with **pointmap- and normal-based
-losses** that avoid the training instabilities of standard distance metrics. An optional
-**test-time optimization (TTO)** pass refines the prediction per scene.
-
-This release reproduces the full pipeline on FaMoS data.
 
 ---
 
@@ -56,23 +46,19 @@ pyrender, trimesh, wandb, etc., and builds the vendored `liegroups` package unde
 `modules/liegroups`. A working compiler toolchain is required. On a headless node, export
 `PYOPENGL_PLATFORM=egl` before launching to use EGL rendering.
 
-## 2. FLAME assets
+## 2. FLAME model
 
-Small project-specific assets (template, region masks, landmark embeddings, example data lists)
-ship with the repo under `assets/`. The **FLAME model files are not redistributed** — download
-them from <https://flame.is.tue.mpg.de/> after accepting the license and place them as:
-
-```
-assets/FLAME2023/flame2023_no_jaw.pkl    # loaded by default
-assets/FLAME2023/flame2023.pkl
-assets/FLAME_masks/FLAME_masks.pkl
-```
+All project assets — template, region masks (incl. `FLAME_masks.pkl`), landmark embeddings,
+example data lists — ship with the repo under `assets/`. The only exception is the
+**FLAME 2023 model**, which is license-restricted: `install.sh` downloads it for you after
+prompting for your [FLAME](https://flame.is.tue.mpg.de/) account (register and accept the
+license first). It is extracted to `assets/FLAME2023/`, with `flame2023_no_jaw.pkl` loaded by
+default.
 
 ## 3. Data
 
 MOCHI uses the **FaMoS** dataset, released as part of
-[TEMPEH](https://tempeh.is.tue.mpg.de/). The trainer consumes it as **undistorted, pre-rendered
-multi-view RGB / normal / depth grids**, so preparation is two steps.
+[TEMPEH](https://tempeh.is.tue.mpg.de/). Follow the following steps to prepare the data.
 
 **a) Download FaMoS.** Register at <https://tempeh.is.tue.mpg.de/> and agree to the license,
 then use the (TEMPEH-provided) fetch scripts under [`famos_download/`](famos_download/) — see
@@ -87,7 +73,7 @@ cd ..
 ```
 
 **b) Preprocess into multi-view grids.** Follow [`datasets/preprocess.md`](datasets/preprocess.md),
-which uses [`render_normals_undistorted_test.py`](render_normals_undistorted_test.py) to
+which uses [`datasets/render_normals_undistorted_test.py`](datasets/render_normals_undistorted_test.py) to
 undistort the views and render the ground-truth normal/depth grids the trainer reads, and
 documents the expected output layout.
 
@@ -103,15 +89,6 @@ bash scripts/stage2_coarse.sh     # coarse + differentiable rendering   (needs s
 bash scripts/stage3_local.sh      # local refinement                    (needs stage 2)
 bash scripts/stage4_refine.sh     # optional per-scene TTO              (needs stage 3)
 ```
-
-Each script is a thin wrapper around the two entry points:
-
-```bash
-python -m trainer.train         # stages 1–3  (trainer.global_trainer)
-python -m trainer.train_refine  # stage 4 TTO (trainer.refiner)
-```
-
-See the script headers for the exact CLI arguments used to produce the released results.
 
 ## Acknowledgements
 

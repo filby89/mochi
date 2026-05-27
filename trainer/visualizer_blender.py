@@ -37,7 +37,7 @@ class RefinerBlenderVisualizer:
         self.t = trainer
 
     def _default_script_root(self):
-        return os.path.join(_repo_root(), "camera_ready_rendering", "rendering_scripts")
+        return os.path.join(_repo_root(), "camera_ready_rendering")
 
     def _resolve_blender_bin(self):
         raw = getattr(self.t.args, "blender_bin", "") or os.environ.get("BLENDER_BIN", "")

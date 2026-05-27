@@ -37,7 +37,6 @@ the data.
 
 ## Next step
 
-These scripts give you the **raw** FaMoS captures. MOCHI consumes **, pre-rendered
-multi-view grids**, so after downloading, run the preprocessing described in
+These scripts give you the **raw** FaMoS captures. For more efficient dataloading you need to preprocess the raw captures into multi-view images: Check
 [`../datasets/preprocess.md`](../datasets/preprocess.md) to produce the inputs the trainer
 expects.

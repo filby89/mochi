@@ -26,7 +26,7 @@ predictions produced by our companion landmark network (see
 
 ## 2. Generate the undistorted multi-view grids
 
-`render_normals_undistorted_test.py` (top of the repo) loads each frame, runs
+`render_normals_undistorted_test.py` (in this `datasets/` folder) loads each frame, runs
 multi-view rendering of the ground-truth scan to produce normal-map and
 depth-map grids, and writes the per-frame inputs in the layout the trainer
 consumes.
@@ -44,7 +44,8 @@ in_meshes_path       = "<famos_root>/meshes_npz"
 Then run:
 
 ```bash
-python render_normals_undistorted_test.py <START> <END> <OUTPUT_ROOT> <UNDISTORT>
+# run from the repo root (the script uses repo-relative imports and the assets/ folder)
+python -m datasets.render_normals_undistorted_test <START> <END> <OUTPUT_ROOT> <UNDISTORT>
 ```
 
 Arguments:

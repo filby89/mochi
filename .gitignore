@@ -58,7 +58,6 @@ assets/meshes_list.json
 modules/liegroups/build/
 modules/liegroups/*.egg-info/
 
-# FLAME models — distributed under a separate license; user must download
-# from https://flame.is.tue.mpg.de/ after agreeing to the terms.
-assets/FLAME2023/*.pkl
-assets/FLAME_masks/FLAME_masks.pkl
+# FLAME 2023 model — license-restricted; downloaded by install.sh (not redistributed).
+assets/FLAME2023/*
+!assets/FLAME2023/.gitkeep
