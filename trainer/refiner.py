@@ -3,22 +3,22 @@ import wandb
 import torch
 import numpy as np
 from torch.autograd import Variable
-from utils.utils import to_numpy, add_labels_to_images
-from utils.mesh_renderer import render_mesh, dist_to_rgb
+from utils.utils import to_numpy
 from utils.point_to_point_loss import PointToPointLoss
 from utils.point_to_surface_loss import PointToSurfaceLoss, compute_s2m_distance
 from utils.edge_loss import EdgeLoss
-from utils.mesh_helper import MeshHelper, pointmap_to_rgb, depth_to_pointmap_robust
+from utils.mesh_helper import MeshHelper, depth_to_pointmap_robust
 from trainer.base_trainer import BaseTrainer
 from option_handler.train_options_global import TrainOptions
 from models.FLAME.FLAME import FLAME
-import math
 import cv2
 import trimesh
-from trainer.utils import get_dense_vertex_colors, draw_dense_points
+from trainer.utils import pixels_to_uv
 from utils.losses import calculate_map_loss, calculate_gradient_map_loss
 import torch.nn.functional as F
 import pandas as pd
+from modules.volumetric_feature_sampler import VolumetricFeatureSampler
+from trainer.visualizer import RefinerVisualizer
 
 
 
@@ -31,7 +31,7 @@ class Trainer(BaseTrainer):
 
         self.no_jaw = True
 
-        from models.FLAME.pliks_flame_2 import PliksFlameSolver
+        from models.FLAME.pliks_flame import PliksFlameSolver
 
         self.flame = FLAME(flame_model_path='assets/FLAME2023/flame2023_no_jaw.pkl', no_jaw=True).to(device)
 
@@ -61,7 +61,6 @@ class Trainer(BaseTrainer):
             for idx in self.vertex_masks_tempeh[key].tolist():
                 self.dense_landmarks_weights_mask[idx] = self.args.dense_mask_weights.get(key)
         self.dense_landmarks_weights_mask = self.dense_landmarks_weights_mask.unsqueeze(0).unsqueeze(0)  # (1,1,V)
-        print(sum(self.dense_landmarks_weights_mask > 0.0), 'vertices with dense landmarks supervision')
         
 
         mp_indices_for_loss = np.arange(0,105).tolist()
@@ -70,7 +69,16 @@ class Trainer(BaseTrainer):
 
         self.mp_indices_for_loss = [x for x in mp_indices_for_loss if x not in indices_to_ignore]
 
+        self.visualizer = self._make_visualizer()
 
+    def _make_visualizer(self):
+        renderer = getattr(self.args, 'visualization_renderer', 'pyrender').lower()
+        if renderer == 'pyrender':
+            return RefinerVisualizer(self)
+        if renderer == 'blender':
+            from trainer.visualizer_blender import RefinerBlenderVisualizer
+            return RefinerBlenderVisualizer(self)
+        raise ValueError(f"Unsupported visualization renderer: {renderer}")
 
     def register_model(self):
         import models.model_aligner.prototypes.model_global_stage as models_global
@@ -152,48 +160,6 @@ class Trainer(BaseTrainer):
             self.base_local_model = torch.nn.DataParallel(self.base_local_model)
             self.local_model = torch.nn.DataParallel(self.local_model)
 
-
-
-            tempeh_model = models_global.Model(args=self.args)
-            # model.initialize(init_method='normal')
-            self.tempeh_model = tempeh_model.to(self.device)
-
-            tempeh_checkpoint = "../TEMPEH/runs/coarse/coarse__TEMPEH_coarse_part_1_color__October11__14-24-16/checkpoints/model_00800000.pth"
-            cp = torch.load(tempeh_checkpoint, map_location=self.device)
-            self.tempeh_model.load_state_dict(cp['model'], strict=True)
-            self.tempeh_model = self.tempeh_model.to(self.device)
-
-            tempeh_local_checkpoint = "../TEMPEH/runs/refinement/refinement__TEMPEH__November01__15-51-22/checkpoints/model_00150000.pth"
-            self.tempeh_local_model = models.Model(args=self.args, mesh_sampler=self.mesh_sampler, feature_net=None)
-            cp = torch.load(tempeh_local_checkpoint, map_location=self.device)
-            self.tempeh_local_model.load_state_dict(cp['model'], strict=True)
-            self.tempeh_local_model = self.tempeh_local_model.to(self.device)
-
-
-    def forward_tempeh(self):
-        random_grid = False
-
-        with torch.inference_mode():
-            self.tempeh_model.eval()
-            self.tempeh_local_model.eval()
-            self.coarse_results_tempeh = self.tempeh_model(**self.inputs_coarse, random_grid=False)
-            self.coarse_points_tempeh = self.coarse_results_tempeh['vertices']
-
-            print(self.inputs['images'].device, self.inputs['camera_intrinsics'].device,
-                  self.inputs['images'].device, self.inputs['camera_intrinsics'].device,
-                  self.coarse_results_tempeh['vertices'].device, self.inputs['camera_distortions'].device, self.camera_centers.device  )
-
-            results = self.tempeh_local_model(  images=self.inputs['images'],
-                                        camera_intrinsics=self.inputs['camera_intrinsics'],
-                                        camera_extrinsics=self.inputs['camera_extrinsics'],
-                                        camera_distortions=self.inputs['camera_distortions'],
-                                        camera_centers=self.camera_centers,
-                                        global_points=self.coarse_results_tempeh['vertices'],
-                                        random_grid=random_grid)
-
-            self.global_points_tempeh = results[-1]
-
-
     def register_dataset(self, index=0):
         from utils import mesh_sampling, utils
 
@@ -260,36 +226,17 @@ class Trainer(BaseTrainer):
                                             vertex_masks=vertex_masks, mask_weights=self.args.edge_mask_weights,
                                             mesh_sampler=self.mesh_sampler)
 
-        from models.losses.VGGPerceptualLoss import VGGPerceptualLoss
-        self.vgg_loss = VGGPerceptualLoss().to(self.device)
-        self.vgg_loss.eval()
-        for param in self.vgg_loss.parameters():
-            param.requires_grad_(False)
-
 
     def feed_data(self, data, mode='train'):
-        if mode == 'train':
-            suffix = '_augmented'
-        else:
-            suffix = ''
+        suffix = '_augmented' if mode == 'train' else ''
 
-        number_views = data['color_images'].shape[1]
-        images = data['color_images' + suffix]
-        camera_intrinsics = data['color_camera_intrinsics' + suffix]
-        # print(camera_intrinsics[0])
-        camera_extrinsics = data['color_camera_extrinsics']
-
-        # print(camera_extrinsics[0])
-        camera_distortions = data['color_camera_distortions'] 
-        camera_centers = data['color_camera_centers']
-        normals_images = data['color_images_normals' + suffix]
         depth_maps = data['color_images_depth' + suffix]
 
         self.current_subjects = data['subject']
         self.current_sequences = data['sequence']
         self.current_frames = data['frame']
 
-        views = np.arange(number_views)
+        views = np.arange(data['color_images'].shape[1])
 
         # positions in the subsampled 'views' array
         self.rotated_views = [i for i, v in enumerate(views) if v in self.rotated_views_global]
@@ -297,24 +244,23 @@ class Trainer(BaseTrainer):
 
 
         self.visualization_view_ids = views
-        self.current_batch_view_ids = views
         self.data = data
         self.inputs = {
-            'images': Variable(images[:,views,...]).to(self.device),
-            'camera_intrinsics': Variable(camera_intrinsics[:,views,...]).to(self.device),
-            'camera_extrinsics': Variable(camera_extrinsics[:,views,...]).to(self.device),
-            'camera_distortions': Variable(camera_distortions[:,views,...]).to(self.device),
+            'images': Variable(data['color_images' + suffix][:, views, ...]).to(self.device),
+            'camera_intrinsics': Variable(data['color_camera_intrinsics' + suffix][:, views, ...]).to(self.device),
+            'camera_extrinsics': Variable(data['color_camera_extrinsics'][:, views, ...]).to(self.device),
+            'camera_distortions': Variable(data['color_camera_distortions'][:, views, ...]).to(self.device),
         }
-        self.camera_centers = Variable(camera_centers[:,views,...]).to(self.device)
+        self.camera_centers = Variable(data['color_camera_centers'][:, views, ...]).to(self.device)
 
         self.target_vertices = data['v_registration'].to(self.device)
 
         if depth_maps is not None:
 
-            self.depth_maps_gt = Variable(depth_maps[:,views,...]).to(self.device) #/self.unit_factor
+            self.depth_maps_gt = Variable(depth_maps[:, views, ...]).to(self.device) #/self.unit_factor
             if self.args.to_meters:
                 self.depth_maps_gt = self.depth_maps_gt / self.unit_factor
-            self.normal_maps_gt = Variable(normals_images[:,views,...]).to(self.device)
+            self.normal_maps_gt = Variable(data['color_images_normals' + suffix][:, views, ...]).to(self.device)
 
             self.normal_maps_gt_norm = self.normal_maps_gt / self.normal_maps_gt.norm(dim=2, keepdim=True).clamp(min=1e-12) * (self.depth_maps_gt.squeeze(-1) > 0.0).unsqueeze(2)
 
@@ -322,52 +268,37 @@ class Trainer(BaseTrainer):
 
 
             self.pointmaps_gt = depth_to_pointmap_robust(
-                depth = self.depth_maps_gt.squeeze(-1),              # (B,V,H,W)
-                K     = self.inputs['camera_intrinsics'],
-                extr  = self.inputs['camera_extrinsics']).permute(0,1,4,2,3)  # (B,V,H,W,3)
+                depth=self.depth_maps_gt.squeeze(-1),                # (B,V,H,W)
+                K=self.inputs['camera_intrinsics'],
+                extr=self.inputs['camera_extrinsics'],
+            ).permute(0, 1, 4, 2, 3)                                 # (B,V,H,W,3)
 
-        dense_key = 'color_camera_dense_landmarks' + suffix
         dense_mask_key = 'color_camera_dense_landmarks_masks' + suffix
 
-        self.landmarks_dense = data[dense_key][:, views].to(self.device)
+        self.landmarks_dense = data['color_camera_dense_landmarks' + suffix][:, views].to(self.device)
         if dense_mask_key in data and data[dense_mask_key] is not None:
-            mask = data[dense_mask_key][:, views].to(self.device).squeeze(-1)
+            self.landmarks_dense_mask = data[dense_mask_key][:, views].to(self.device).squeeze(-1)
         else:
-            mask = torch.ones(self.landmarks_dense.shape[:2], device=self.device, dtype=torch.float32)
-        self.landmarks_dense_mask = mask
+            self.landmarks_dense_mask = torch.ones(self.landmarks_dense.shape[:2], device=self.device, dtype=torch.float32)
 
+        h, w = self.inputs['images'].shape[-2:]
+        self.landmarks_dense_uv = pixels_to_uv(self.landmarks_dense, h, w)
 
-        self.landmarks_dense_uv = self.landmarks_dense.clone()
-        self.landmarks_dense_uv[..., 0] = self.landmarks_dense_uv[..., 0]/(self.inputs['images'].shape[-1]-1) * 2.0 - 1.0
-        self.landmarks_dense_uv[..., 1] = self.landmarks_dense_uv[..., 1]/(self.inputs['images'].shape[-2]-1) * 2.0 - 1.0
-
-
-        dense_mediapipe_landmarks_key = 'color_camera_dense_mediapipe_landmarks' + suffix
-        self.landmarks_dense_mediapipe = data[dense_mediapipe_landmarks_key][:, views].to(self.device)
-
-        self.landmarks_dense_mediapipe_uv = self.landmarks_dense_mediapipe.clone()
-        self.landmarks_dense_mediapipe_uv[..., 0] = self.landmarks_dense_mediapipe_uv[..., 0]/(self.inputs['images'].shape[-1]-1) * 2.0 - 1.0
-        self.landmarks_dense_mediapipe_uv[..., 1] = self.landmarks_dense_mediapipe_uv[..., 1]/(self.inputs['images'].shape[-2]-1) * 2.0 - 1.0
+        self.landmarks_dense_mediapipe = data['color_camera_dense_mediapipe_landmarks' + suffix][:, views].to(self.device)
+        self.landmarks_dense_mediapipe_uv = pixels_to_uv(self.landmarks_dense_mediapipe, h, w)
 
         self.global_landmarks_projected_dense = None
 
         if self.args.enable_local:
             # for coarse, downsample the images
-            suffix = ''
-            BB, L, C, H, W = data['color_images' + suffix].shape
-            flattened_images = data['color_images' + suffix].to(self.device).view(BB*L, C, H, W).clone()
-            downsampled_images = F.interpolate(flattened_images, scale_factor=0.5, mode='bilinear', align_corners=False)
-            downsampled_images = downsampled_images.view(BB, L, C, H//2, W//2)
+            BB, L, C, H, W = data['color_images'].shape
+            downsampled_images = F.interpolate(
+                data['color_images'].to(self.device).view(BB * L, C, H, W),
+                scale_factor=0.5, mode='bilinear', align_corners=False,
+            ).view(BB, L, C, H // 2, W // 2)
 
-            scale = 0.5 
-            downscaled_intrinsics = data['color_camera_intrinsics' + suffix].to(self.device).clone()
-            downscaled_intrinsics[..., 0, 0] *= scale  # fx
-            downscaled_intrinsics[..., 0, 1] *= scale  # fy
-            downscaled_intrinsics[..., 1, 0] *= scale  # fy
-            downscaled_intrinsics[..., 1, 1] *= scale  # fy
-
-            downscaled_intrinsics[..., 0, 2] *= scale  # cx
-            downscaled_intrinsics[..., 1, 2] *= scale  # cy
+            downscaled_intrinsics = data['color_camera_intrinsics'].to(self.device).clone()
+            downscaled_intrinsics[..., :2, :] *= 0.5
 
             self.inputs_coarse = {
                 'images': downsampled_images,
@@ -416,98 +347,10 @@ class Trainer(BaseTrainer):
                 pliks_in, iters=1, lsq_method='ne', estimate_root=False
             )  # dict: beta, t, Rk, V_fit
             # keep outputs as float32; convert back to mm for V_fit
-            self.pliks_out['V_fit'] = self.pliks_out['V_fit'].to(dtype=torch.float32) 
+            self.pliks_out['V_fit'] = self.pliks_out['V_fit'].to(dtype=torch.float32)
             if not self.args.to_meters:
                 self.pliks_out['V_fit'] = self.pliks_out['V_fit'] * self.unit_factor  # convert back to mm if needed
 
-
-            beta_all = self.pliks_out['beta']  # (B, n_shape+n_exp)
-            n_id, n_exp = self.flame.n_shape, self.flame.n_exp
-            beta_id  = beta_all[:, :n_id]
-            beta_exp = beta_all[:, n_id:n_id+n_exp]
-
-            self.beta_reg = (beta_id  ** 2).mean()
-            self.exp_reg  = (beta_exp ** 2).mean()
-
-
-            t_hat    = self.pliks_out['t']                                          # [B, 3]
-            Rk       = self.pliks_out['Rk']                                         # [B, K, 3, 3]
-
-            V_fit = self.pliks_out['V_fit']
-
-            from models.FLAME.pliks_flame import build_R_world_from_segments, mat_to_axis_angle, world_to_relative_rotations
-            J     = self.flame.J_regressor.shape[0]
-
-            R_world = build_R_world_from_segments(Rk, self.pliks_solver.seg_list, J)   # [B,J,3,3]
-            R_rel   = world_to_relative_rotations(R_world, self.flame.parents)   # [B,J,3,3]
-
-            # swapped with the pytorch3d version
-            from pytorch3d.transforms import matrix_to_axis_angle
-            aa_all = matrix_to_axis_angle(R_rel)
-
-            # # pick only stable joints (good curriculum): neck + jaw + eyes
-            NECK_ID = 1
-            # # TODO: fill your indices once you confirm them
-            JAW_ID, LEYE_ID, REYE_ID = 2, 3, 4
-
-            pose_params      = torch.zeros(beta_all.shape[0], 3, device=beta_all.device)          # global/root
-            neck_pose_params = aa_all[:, NECK_ID]
-            if self.no_jaw:
-                jaw_params = torch.zeros_like(aa_all[:, JAW_ID])
-            else:
-                jaw_params       = aa_all[:, JAW_ID]
-
-            eye_pose_params  = torch.cat([aa_all[:, LEYE_ID], aa_all[:, REYE_ID]], dim=-1)
-
-            def rigid_align_no_scale(X: torch.Tensor, Y: torch.Tensor):
-                """
-                Solve R,t (no scale) s.t. R X + t ≈ Y   using SVD (batched).
-                X,Y: [B,V,3]
-                Returns:
-                R: [B,3,3], t: [B,3]
-                """
-                Xc = X - X.mean(dim=1, keepdim=True)
-                Yc = Y - Y.mean(dim=1, keepdim=True)
-                H  = Xc.transpose(1,2) @ Yc                         # [B,3,3]
-                U, S, Vt = torch.linalg.svd(H)                      # Vt=V^T
-                R = Vt.transpose(1,2) @ U.transpose(1,2)            # [B,3,3]
-                # reflection handling
-                det = torch.det(R)
-                if (det < 0).any():
-                    Vt_fix = Vt.clone()
-                    Vt_fix[det < 0, -1, :] *= -1
-                    R[det < 0] = Vt_fix[det < 0].transpose(1,2) @ U[det < 0].transpose(1,2)
-                t = Y.mean(dim=1) - (R @ X.mean(dim=1).unsqueeze(-1)).squeeze(-1)  # [B,3]
-                return R, t
-
-
-            out = self.flame.forward({
-                'shape_params':      beta_id,
-                'expression_params': beta_exp,
-                'pose_params':       pose_params,
-                'neck_pose_params':  neck_pose_params,
-                'jaw_params':        jaw_params,
-                'eye_pose_params':   eye_pose_params,
-            })
-            V_flame = out['vertices'] #+ t_hat[:, None, :]   # meters
-            # V_flame_mm = V_flame * 1000.0    
-            # do float32 
-            with torch.cuda.amp.autocast(enabled=False):
-                if self.args.to_meters:
-                    global_points = self.global_points.float() 
-                else:
-                    global_points = self.global_points.float() / self.unit_factor
-
-                R_root, t_root = rigid_align_no_scale(V_flame.float(), global_points)
-
-            V_flame_mm = (R_root[:,None] @ V_flame.unsqueeze(-1)).squeeze(-1) + t_root[:,None,:]
-
-            if not self.args.to_meters:
-                V_flame_mm = V_flame_mm*self.unit_factor
-
-            self.pliks_out['V_flame_mm'] = V_flame_mm
-
-    
 
     def compute_vertex_losses(self, vertices, target_vertices=None, suffix=""):
         losses = {}
@@ -548,17 +391,16 @@ class Trainer(BaseTrainer):
 
         bs, num_views, c, height, width = self.inputs['images'].shape
         losses = {}
-        predictions = {}
-                
+
         if not self.args.enable_diff_rendering:
-            return losses, predictions
+            return losses
         
         visibility_mask = (self.depth_maps_gt[:, :, :, :].squeeze(-1) > 0.0).unsqueeze(2)
         
         try:
             with torch.cuda.amp.autocast(enabled=False):
                 # print(vertices.shape, self.inputs['camera_intrinsics'].shape, self.inputs['camera_extrinsics'].shape, 'sfd')
-                pred = self.mesh_helper.render_lots_of_stuff(
+                pred = self.mesh_helper.render_normals_and_depth(
                     vertices,
                     self.inputs['camera_intrinsics'],
                     self.inputs['camera_extrinsics'],
@@ -571,7 +413,7 @@ class Trainer(BaseTrainer):
 
         except Exception as e:
             print('Rendering failed:', e)
-            return losses, predictions
+            return losses
         
         # Extract rendered outputs
         normal_maps_pred = pred['normal_images'].permute(0, 3, 1, 2).view(bs, num_views, c, height, width)
@@ -590,9 +432,9 @@ class Trainer(BaseTrainer):
             .permute(0, 1, 4, 2, 3)
         )
         
-        predictions[f'normal_maps_pred{suffix}'] = normal_maps_pred
-        predictions[f'depth_maps_pred{suffix}'] = depth_maps_pred
-        predictions[f'pointmaps_pred{suffix}'] = pointmaps_pred
+        self.normal_maps_pred = normal_maps_pred
+        self.depth_maps_pred = depth_maps_pred
+        self.pointmaps_pred = pointmaps_pred
         
         # Compute rendering losses
         normals_loss, normals_loss_per_pixel = calculate_map_loss(
@@ -620,8 +462,8 @@ class Trainer(BaseTrainer):
 
 
         # store gradient magnitudes for visualization
-        predictions[f'normals_grad_mag_pred{suffix}'] = grad_mag_pred.view(bs, num_views, height, width)
-        predictions[f'normals_grad_mag_gt{suffix}']   = grad_mag_gt.view(bs, num_views, height, width)
+        self.normals_grad_mag_pred = grad_mag_pred.view(bs, num_views, height, width)
+        self.normals_grad_mag_gt   = grad_mag_gt.view(bs, num_views, height, width)
         # --- END NEW ---
 
 
@@ -662,246 +504,88 @@ class Trainer(BaseTrainer):
         setattr(self, f'normals_grad_loss_per_pixel{suffix}',
                 normals_grad_pp.view(bs, num_views, height, width).detach().cpu())
 
-        return losses, predictions
+        return losses
 
     def compute_landmarks_loss(self, vertices, suffix="", gt_landmarks=None, gt_mask=None):
-        """
-        Compute landmarks loss for given vertices.
-        """
-        suffix_lower = suffix.lower()
-        loss_weight = self.args.weight_landmarks
-        if "dense" in suffix_lower:
-            loss_weight = getattr(self.args, 'weight_dense_landmarks', 0.0)
+        """Compute landmarks loss for given vertices (scale/translation/rotation-invariant relative pairwise distances)."""
+        is_dense = "dense" in suffix.lower()
+        is_mediapipe = "mediapipe" in suffix.lower()
 
-        # print(loss_weight, suffix)
-        if loss_weight <= 0.0 and "dense" not in suffix_lower:
+        loss_weight = getattr(self.args, 'weight_dense_landmarks', 0.0) if is_dense else self.args.weight_landmarks
+        if loss_weight <= 0.0 and not is_dense:
             return torch.tensor(0.0, device=vertices.device), None
-        
+
         num_views = self.inputs['camera_extrinsics'].shape[1]
-        vertices_expanded = vertices.unsqueeze(1).repeat(1, num_views, 1, 1)
-        vertices_flat = vertices_expanded.view(-1, vertices_expanded.shape[2], vertices_expanded.shape[3])
-        
-        if "mediapipe" in suffix_lower:
+        vertices_flat = vertices.unsqueeze(1).repeat(1, num_views, 1, 1).flatten(0, 1)
+
+        if is_mediapipe:
             landmarks3d = self.flame.select_mediapipe(vertices_flat)
-        elif "dense" in suffix_lower:
+        elif is_dense:
             landmarks3d = vertices_flat
         else:
             landmarks3d = self.flame.seletec_3d68(vertices_flat)
 
-        bs, _, _, height, width = self.data['color_images_augmented'].shape
-        
-        camera_extrinsics = self.inputs['camera_extrinsics'].view(-1, self.inputs['camera_extrinsics'].shape[2], self.inputs['camera_extrinsics'].shape[3])
-        camera_intrinsics = self.inputs['camera_intrinsics'].view(-1, self.inputs['camera_intrinsics'].shape[2], self.inputs['camera_intrinsics'].shape[3])
-        camera_distortions = self.inputs['camera_distortions'].view(-1, self.inputs['camera_distortions'].shape[2])
-        
-
-        from modules.volumetric_feature_sampler import VolumetricFeatureSampler
-
+        _, _, _, height, width = self.data['color_images_augmented'].shape
         landmarks_x, landmarks_y = VolumetricFeatureSampler.project(
-            landmarks3d, camera_intrinsics, camera_extrinsics, camera_distortions,
-            height=height, width=width
+            landmarks3d,
+            self.inputs['camera_intrinsics'].flatten(0, 1),
+            self.inputs['camera_extrinsics'].flatten(0, 1),
+            self.inputs['camera_distortions'].flatten(0, 1),
+            height=height, width=width,
         )
-        
+
+        # Pixel-space coords: always used for vis; also the loss target when not to_meters.
+        px = (landmarks_x + 1.0) * (width - 1.) / 2.0
+        py = (landmarks_y + 1.0) * (height - 1.) / 2.0
+        landmarks_pixel = torch.stack((px, py), dim=-1).view(-1, num_views, px.shape[1], 2)
+        landmarks_projected_vis = landmarks_pixel.detach()
+
         if self.args.to_meters:
-            landmarks_projected = torch.stack((landmarks_x, landmarks_y), dim=-1)
-            landmarks_projected = landmarks_projected.view(-1, num_views, landmarks_projected.shape[1], landmarks_projected.shape[2])
-
-            # Inverse transform
-            with torch.no_grad():
-                landmarks_x_vis = (landmarks_x.detach() + 1.0) * (width - 1.) / 2.0
-                landmarks_y_vis = (landmarks_y.detach() + 1.0) * (height - 1.) / 2.0
-                landmarks_projected_vis = torch.stack((landmarks_x_vis, landmarks_y_vis), dim=-1)
-                landmarks_projected_vis = landmarks_projected_vis.view(-1, num_views, landmarks_projected_vis.shape[1], landmarks_projected_vis.shape[2])
+            landmarks_projected = torch.stack((landmarks_x, landmarks_y), dim=-1).view(-1, num_views, landmarks_x.shape[1], 2)
         else:
-            landmarks_x_vis = (landmarks_x + 1.0) * (width - 1.) / 2.0
-            landmarks_y_vis = (landmarks_y + 1.0) * (height - 1.) / 2.0
-            landmarks_projected = torch.stack((landmarks_x_vis, landmarks_y_vis), dim=-1)
-            landmarks_projected = landmarks_projected.view(-1, num_views, landmarks_projected.shape[1], landmarks_projected.shape[2])
-            landmarks_projected_vis = landmarks_projected.clone()
+            landmarks_projected = landmarks_pixel
 
+        nr = self.non_rotated_views
+        pred_v = landmarks_projected[:, nr]
+        gt_v = gt_landmarks[:, nr, :, :2]
 
-        # Determine ground truth landmarks and mask
-        # target_landmarks = self.landmarks if gt_landmarks is None else gt_landmarks
-        # target_mask = self.landmarks_mask if gt_mask is None else gt_mask
-        target_landmarks = gt_landmarks
-        if gt_mask is not None:
-            target_mask = gt_mask
+        if is_mediapipe:
+            pred_pts = pred_v[:, :, self.mp_indices_for_loss]
+            gt_pts = gt_v[:, :, self.mp_indices_for_loss]
+        elif is_dense:
+            pred_pts = pred_v
+            gt_pts = gt_v
+            if gt_mask is not None:
+                gt_mask = gt_mask[:, nr]
         else:
-            target_mask = None
+            pred_pts = pred_v[:, :, :17]
+            gt_pts = gt_v[:, :, :17]
 
-        # # Compute per-point losses
-        # if "mediapipe" in suffix_lower:
-        #     pred_pts = landmarks_projected[:,self.non_rotated_views, :, :2]
-        #     gt_pts = target_landmarks[:, self.non_rotated_views, :, :2]
-        # Compute per-point losses
-        if "mediapipe" in suffix_lower:
-            # print(self.mp_indices_for_loss, landmarks_projected.shape, target_landmarks.shape, 'mp indices shape')
-            pred_pts = landmarks_projected[:,self.non_rotated_views, :, :2]
-            # print(pred_pts.shape,'aa')
-            pred_pts = pred_pts[:, :, self.mp_indices_for_loss, :]
-            # print(pred_pts.shape,'bb')
-            gt_pts = target_landmarks[:, self.non_rotated_views, :, :2]
-            gt_pts = gt_pts[:, :, self.mp_indices_for_loss, :]
-            # L1 for this !
-            diff_sq = torch.abs(pred_pts - gt_pts).sum(-1)
-        elif "dense" in suffix_lower:
-            # print(landmarks_projected.shape)
-            pred_pts = landmarks_projected[:, self.non_rotated_views, :, :2]
-            gt_pts = target_landmarks[:, self.non_rotated_views, :, :2]
-            target_mask = target_mask[:, self.non_rotated_views]
-            diff_sq = (pred_pts - gt_pts).pow(2).sum(-1)  # (B,V,N)
-        
-        else:
-            pred_pts = landmarks_projected[:, self.non_rotated_views, :17, :2]
-            gt_pts = target_landmarks[:, self.non_rotated_views, :17, :2]
-
-        
-        # calculate the relative and not absolute error
-
-
-        # --- Relative (intra-set) landmark distance loss ---
-        # pred_pts, gt_pts: (B, V, N, 2)
-
-        B, Vv, N, _ = pred_pts.shape
-        device = pred_pts.device
+        # Scale/translation/rotation-invariant relative pairwise-distance loss.
+        N = pred_pts.shape[2]
         eps = 1e-8
-
-        # Pairwise Euclidean distances within each set (translation/rotation invariant)
-        # Shapes: (B, V, N, N)
-        D_pred = torch.cdist(pred_pts, pred_pts, p=2)
+        D_pred = torch.cdist(pred_pts, pred_pts, p=2)                 # (B, V, N, N)
         D_gt   = torch.cdist(gt_pts,   gt_pts,   p=2)
-
-        # Keep only upper triangle (exclude diagonal) to avoid double counting/self-pairs
-        tri = torch.triu(torch.ones(N, N, device=device, dtype=torch.bool), diagonal=1)
-        # Shapes: (B, V, K) where K = N*(N-1)/2
-        D_pred_ut = D_pred[..., tri]
+        tri = torch.triu(torch.ones(N, N, device=pred_pts.device, dtype=torch.bool), diagonal=1)
+        D_pred_ut = D_pred[..., tri]                                   # (B, V, K)
         D_gt_ut   = D_gt[...,   tri]
 
-        # Robust per-view scale (median non-zero GT pairwise distance) for scale invariance
-        # scale: (B, V, 1)
-        scale = D_gt_ut.median(dim=-1, keepdim=True).values.clamp_min(eps)
+        scale = D_gt_ut.median(dim=-1, keepdim=True).values.clamp_min(eps)  # (B, V, 1)
+        rel_diff = (D_pred_ut / scale - D_gt_ut / scale).abs()
 
-        # Normalize pairwise distances
-        D_pred_rel = D_pred_ut / scale
-        D_gt_rel   = D_gt_ut   / scale
-
-        # Relative difference
-        rel_diff = (D_pred_rel - D_gt_rel).abs()  # (B, V, K)
-
-        # Optional hinge threshold in relative units (default 0.0 if not provided)
         tau_rel = getattr(self.args, 'landmarks_rel_tau', 0.0)
         if tau_rel > 0.0:
             rel_diff = torch.clamp(rel_diff - tau_rel, min=0.0)
 
-        # Use L2 on the relative differences (change to .abs() for L1 if you prefer)
-        loss_point = rel_diff.pow(2)               # (B, V, K)
+        per_view_loss = rel_diff.pow(2).mean(dim=-1)                   # (B, V)
 
-        # Reduce over pairs -> per-view
-        per_view_loss = loss_point.mean(dim=-1)    # (B, V)
-
-
-        # diff_sq = (pred_pts - gt_pts).pow(2).sum(-1)  # (B,V,N)
-        # # if "mediapipe" in suffix_lower:
-        # #     print(diff_sq)
-        # #     print(diff)
-
-        # # diff_sq: (B, V, N)
-        # diff = diff_sq.sqrt()  # Euclidean distance in pixels or normalized coords
-
-        # # threshold τ (in same units as diff)
-        # tau = 2.5 # getattr(self.args, 'landmarks_hinge_thresh', 0.0)
-        # # print(diff.shape, 'diff', diff_sq.shape, 'dsq')
-        # # print(diff)
-        # # hinge: 0 if diff <= τ, (diff - τ) otherwise
-        # hinge = torch.clamp(diff - tau, min=0.0)
-        # # print(hinge.shape)
-
-        # # choose your “shape” of the penalty:
-        # #  - L1-like:      loss_point = hinge
-        # #  - L2-like:      loss_point = hinge ** 2
-        # #  - smooth-ish:   loss_point = hinge ** 2 / 2, etc.
-        # loss_point = hinge ** 2     # (B, V, N)
-
-        # loss_point = loss_point[loss_point > 0] 
-
-        # # if no elements, then 0
-        # if loss_point.numel() == 0:
-        #     loss_point = torch.tensor(0.0, device=vertices.device)
-
-        # per_point_loss = loss_point
-        # per_view_loss  = per_point_loss.mean(-1)  # (B, V)
-        # print(per_view_loss.shape, 'pp')
-
-        # DENSE_LANDMARKS_WEIGHTS = {
-        #     'face': 0.0,
-        #     'ears': 0.0,
-        #     'eyeballs': 0.0,
-        #     'eye_region': 0.0,
-        #     'lips': 100.0,
-        #     'neck': 0.0,
-        #     'nostrils': 0.0,
-        #     'scalp': 0.0, # changed from 1.0 to 10.0
-        #     'boundary': 0.0,
-        #     'left_eyeball': 0.0,
-        #     'right_eyeball': 0.0,
-        #     'right_ear': 0.0,
-        #     'right_eye_region': 0.0,
-        #     'left_ear': 0.0,
-        #     'left_eye_region': 0.0,
-        # }
-
-
-        # self.dense_landmarks_weights_mask = torch.zeros((5023,), dtype=torch.float32).to(self.device)
-        # for key in self.vertex_masks_tempeh.keys():
-        #     if 'vertex_count' in key:
-        #         continue
-        #     for idx in self.vertex_masks_tempeh[key].tolist():
-        #         self.dense_landmarks_weights_mask[idx] = self.args.dense_mask_weights.get(key)
-        # self.dense_landmarks_weights_mask = self.dense_landmarks_weights_mask.unsqueeze(0).unsqueeze(0)  # (1,1,V)
-        # # print(sum(self.dense_landmarks_weights_mask > 0.0), 'vertices with dense landmarks supervision')
-
-        # if "dense" in suffix_lower and getattr(self, 'dense_landmarks_weights_mask', None) is not None:
-        #     # print('Applying dense landmarks weights mask')
-        #     weights = self.dense_landmarks_weights_mask.to(diff_sq.device)
-        #     diff_sq = diff_sq * weights
-
-
-        # # -------- NEW: hard upweighting for big errors --------
-        # thr_sq   = getattr(self.args, 'dense_landmarks_err_thresh_sq', 1.0)     # e.g., 3.0**2
-        # hi_w     = getattr(self.args, 'dense_landmarks_high_weight', 100.0)     # e.g., 100.0
-
-        # # elementwise multiplier: 100 if diff_sq > thr_sq, else 1
-        # mult = torch.where(
-        #     diff_sq > thr_sq,
-        #     torch.as_tensor(hi_w, device=diff_sq.device, dtype=diff_sq.dtype),
-        #     torch.as_tensor(1.0, device=diff_sq.device, dtype=diff_sq.dtype)
-        # )
-
-        # diff_sq = diff_sq * mult
-
-        # print(diff_sq.shape)
-        # # get the mean of nonzero
-        # mean_nonzero = diff_sq[diff_sq > 0].mean()
-        # print('Landmarks loss - mean nonzero:', mean_nonzero.item())
-
-        # per_point_loss = diff_sq
-
-        # per_view_loss = per_point_loss.mean(-1)  # (B,V)
-
-        if target_mask is not None:
-            mask = target_mask.to(per_view_loss.dtype)
-            valid = mask.sum()
-            # print(mask.shape)
-            if valid.item() > 0:
-                landmarks_loss = (per_view_loss * mask).sum() / valid
-            else:
-                landmarks_loss = torch.tensor(0.0, device=per_view_loss.device)
+        if gt_mask is not None:
+            mask_f = gt_mask.to(per_view_loss.dtype)
+            landmarks_loss = (per_view_loss * mask_f).sum() / mask_f.sum().clamp(min=1)
         else:
             landmarks_loss = per_view_loss.mean()
-        
-        landmarks_loss = landmarks_loss * loss_weight
-        
-        return landmarks_loss, landmarks_projected_vis
+
+        return landmarks_loss * loss_weight, landmarks_projected_vis
 
     def _points2surface_loss_for_vertices(self, vertices):
         """
@@ -936,183 +620,52 @@ class Trainer(BaseTrainer):
         all_losses.update(global_vertex_losses)
 
 
-        landmarks_loss_dense_out, global_landmarks_projected_dense_out = self.compute_landmarks_loss(
+        all_losses['landmarks_loss_dense_out'], self.global_landmarks_projected_dense_out = self.compute_landmarks_loss(
             self.global_points,
             suffix="_dense",
             gt_landmarks=self.landmarks_dense_uv if self.args.to_meters else self.landmarks_dense,
             gt_mask=self.landmarks_dense_mask
         )
-        all_losses['landmarks_loss_dense_out'] = landmarks_loss_dense_out
-        self.global_landmarks_projected_dense_out = global_landmarks_projected_dense_out
 
-        landmarks_loss_dense_mediapipe_out, global_landmarks_projected_dense_mediapipe_out = self.compute_landmarks_loss(
+        all_losses['landmarks_loss_dense_mediapipe_out'], self.global_landmarks_projected_dense_mediapipe_out = self.compute_landmarks_loss(
             self.global_points,
             suffix="_mediapipe",
             gt_landmarks=self.landmarks_dense_mediapipe_uv if self.args.to_meters else self.landmarks_dense_mediapipe,
-            # gt_mask=self.landmarks_dense_mediapipe_mask
         )
-        all_losses['landmarks_loss_dense_mediapipe_out'] = landmarks_loss_dense_mediapipe_out
-        self.global_landmarks_projected_dense_mediapipe_out = global_landmarks_projected_dense_mediapipe_out
 
         if self.args.enable_diff_rendering:
-            global_rendering_losses, global_predictions = self.compute_rendering_losses(self.global_points, suffix="")
+            global_rendering_losses = self.compute_rendering_losses(self.global_points, suffix="")
             all_losses.update(global_rendering_losses)
-        
-            for key, value in global_predictions.items():
-                if key.endswith(""):  
-                    attr_name = key.replace("", "") 
-                    if isinstance(value, torch.Tensor) and (value.dtype == torch.float16 or value.dtype == torch.bfloat16):
-                        setattr(self, attr_name, value.float())
-                    else:
-                        setattr(self, attr_name, value)
             
 
-        
-        # ---------- PLIKS ---------- #
-        w_beta = getattr(self.args, 'weight_shape_regularization', 0.0)      # e.g., 1e-4
-        w_exp  = getattr(self.args, 'weight_expression_regularization', 0.0) # e.g., 1e-4
-        w_pose = getattr(self.args, 'weight_pose_regularization', 0.0)       # e.g., 1e-4
-
         if hasattr(self, 'pliks_out') and self.pliks_out is not None:
-            beta_all = self.pliks_out['beta']  # (B, n_shape+n_exp)
-            n_id, n_exp = self.flame.n_shape, self.flame.n_exp
-            beta_id  = beta_all[:, :n_id]
-            beta_exp = beta_all[:, n_id:n_id+n_exp]
-            beta_reg = (beta_id  ** 2).mean() * w_beta
-            exp_reg  = (beta_exp ** 2).mean() * w_exp
+            pliks_losses, V_flame_mm = self.pliks_solver.compute_regularizers(
+                self.pliks_out, self.global_points, self.flame,
+                weight_shape=getattr(self.args, 'weight_shape_regularization', 0.0),
+                weight_expression=getattr(self.args, 'weight_expression_regularization', 0.0),
+                weight_pose=getattr(self.args, 'weight_pose_regularization', 0.0),
+                weight_vertices=self.args.weight_vertices_regularizer_pliks,
+                weight_vertices_edge=self.args.weight_vertices_regularizer_pliks_edge,
+                edge_loss_fn=self.edge_loss_function,
+                no_jaw=self.no_jaw,
+                to_meters=self.args.to_meters,
+                unit_factor=self.unit_factor,
+            )
+            all_losses.update(pliks_losses)
+            self.pliks_out['V_flame_mm'] = V_flame_mm
 
-            t_hat    = self.pliks_out['t']                                          # [B, 3]
-            Rk       = self.pliks_out['Rk']                                         # [B, K, 3, 3]
-
-            V_fit = self.pliks_out['V_fit'] #.detach()                                       # [B, V, 3] ! detach to avoid degeneracy
-            # V_fit = inv.get('V_fit_root', inv['V_fit'])
-
-            from models.FLAME.pliks_flame import build_R_world_from_segments, mat_to_axis_angle, world_to_relative_rotations
-            J     = self.flame.J_regressor.shape[0]
-
-            R_world = build_R_world_from_segments(Rk, self.pliks_solver.seg_list, J)   # [B,J,3,3]
-            R_rel   = world_to_relative_rotations(R_world, self.flame.parents)   # [B,J,3,3]
-
-            # aa_all  = mat_to_axis_angle(R_rel)                               # [B,J,3]
-
-            # swapped with the pytorch3d version
-            from pytorch3d.transforms import matrix_to_axis_angle
-            aa_all = matrix_to_axis_angle(R_rel)
-
-            # # pick only stable joints (good curriculum): neck + jaw + eyes
-            NECK_ID = 1
-            # # TODO: fill your indices once you confirm them
-            JAW_ID, LEYE_ID, REYE_ID = 2, 3, 4
-
-            pose_params      = torch.zeros(beta_all.shape[0], 3, device=beta_all.device)          # global/root
-            neck_pose_params = aa_all[:, NECK_ID]
-            if self.no_jaw:
-                jaw_params = torch.zeros_like(aa_all[:, JAW_ID])
-            else:
-                jaw_params       = aa_all[:, JAW_ID]
-
-            # print(jaw_params,'jaw')
-            # print(jaw_params)
-            eye_pose_params  = torch.cat([aa_all[:, LEYE_ID], aa_all[:, REYE_ID]], dim=-1)
-            # print(aa_all.shape)
-
-            def rigid_align_no_scale(X: torch.Tensor, Y: torch.Tensor):
-                """
-                Solve R,t (no scale) s.t. R X + t ≈ Y   using SVD (batched).
-                X,Y: [B,V,3]
-                Returns:
-                R: [B,3,3], t: [B,3]
-                """
-                Xc = X - X.mean(dim=1, keepdim=True)
-                Yc = Y - Y.mean(dim=1, keepdim=True)
-                H  = Xc.transpose(1,2) @ Yc                         # [B,3,3]
-                U, S, Vt = torch.linalg.svd(H)                      # Vt=V^T
-                R = Vt.transpose(1,2) @ U.transpose(1,2)            # [B,3,3]
-                # reflection handling
-                det = torch.det(R)
-                if (det < 0).any():
-                    Vt_fix = Vt.clone()
-                    Vt_fix[det < 0, -1, :] *= -1
-                    R[det < 0] = Vt_fix[det < 0].transpose(1,2) @ U[det < 0].transpose(1,2)
-                t = Y.mean(dim=1) - (R @ X.mean(dim=1).unsqueeze(-1)).squeeze(-1)  # [B,3]
-                return R, t
-
-
-            out = self.flame.forward({
-                'shape_params':      beta_id,
-                'expression_params': beta_exp,
-                'pose_params':       pose_params,
-                'neck_pose_params':  neck_pose_params,
-                'jaw_params':        jaw_params,
-                'eye_pose_params':   eye_pose_params,
-            })
-            V_flame = out['vertices'] #+ t_hat[:, None, :]   # meters
-
-            with torch.cuda.amp.autocast(enabled=False):
-                if self.args.to_meters:
-                    global_points = self.global_points.float() 
-                else:
-                    global_points = self.global_points.float() / self.unit_factor
-
-                R_root, t_root = rigid_align_no_scale(V_flame.float(), global_points)
-
-            V_flame_mm = (R_root[:,None] @ V_flame.unsqueeze(-1)).squeeze(-1) + t_root[:,None,:]
-
-            if not self.args.to_meters:
-                V_flame_mm = V_flame_mm*self.unit_factor
-
-
-            all_losses['beta_regularizer_pliks'] = beta_reg
-            all_losses['exp_regularizer_pliks']  = exp_reg
-            all_losses['pose_regularizer_pliks']  = aa_all.pow(2).sum(dim=(1,2)).mean() * w_pose
-
-            # edge_mask = {
-            #     'w_edge_face': 2.0,
-            #     'w_edge_ears': 3.0,
-            #     'w_edge_eyeballs': 50.0,
-            #     'w_edge_eye_region': 10.0,
-            #     'w_edge_lips': 3.0,
-            #     'w_edge_neck': 1.0,
-            #     'w_edge_nostrils': 10.0,
-            #     'w_edge_scalp': 1.0,
-            #     'w_edge_boundary': 10.0,
-            # }
-
-
-            all_losses['vertices_regularizer_pliks'] = F.mse_loss(V_flame_mm, self.global_points) * self.args.weight_vertices_regularizer_pliks # NO DETACH !!
-            all_losses['vertices_regularizer_pliks_edge'] = self.edge_loss_function(V_flame_mm, self.global_points) * self.args.weight_vertices_regularizer_pliks_edge # NO DETACH !!
-
-            landmarks_loss_dense, global_landmarks_projected_dense = self.compute_landmarks_loss(
+            all_losses['landmarks_loss_dense'], self.global_landmarks_projected_dense = self.compute_landmarks_loss(
                 V_flame_mm,
                 suffix="_dense",
                 gt_landmarks=self.landmarks_dense_uv if self.args.to_meters else self.landmarks_dense,
                 gt_mask=self.landmarks_dense_mask
             )
-            all_losses['landmarks_loss_dense'] = landmarks_loss_dense
-            self.global_landmarks_projected_dense = global_landmarks_projected_dense
 
-            self.pliks_out['V_flame_mm'] = V_flame_mm
-            landmarks_loss_dense_mediapipe, global_landmarks_projected_dense_mediapipe = self.compute_landmarks_loss(
+            all_losses['landmarks_loss_dense_mediapipe'], self.global_landmarks_projected_dense_mediapipe = self.compute_landmarks_loss(
                 self.global_points,
                 suffix="_mediapipe",
                 gt_landmarks=self.landmarks_dense_mediapipe_uv if self.args.to_meters else self.landmarks_dense_mediapipe,
-                # gt_mask=self.landmarks_dense_mediapipe_mask
             )
-            all_losses['landmarks_loss_dense_mediapipe'] = landmarks_loss_dense_mediapipe
-            self.global_landmarks_projected_dense_mediapipe = global_landmarks_projected_dense_mediapipe
-
-            # i = np.zeros((2000,2000,3))
-            # for i in range(self.global_landmarks_projected_dense_mediapipe[0,0].shape[0]):
-            #     x = int(self.global_landmarks_projected_dense_mediapipe[0,0,i,0].item())*20
-            #     y = int(self.global_landmarks_projected_dense_mediapipe[0,0,i,1].item())*20
-            #     if x >=0 and x <2000 and y>=0 and y<2000:
-            #         i[y,x,0] = 1.0
-            # import imageio
-            # imageio.imwrite('landmarks_debug.png', (i*255).astype(np.uint8))
-            # raise
-
-            
-        # ---------- END NEW ----------
 
         # Calculate total loss
         # total_loss = sum([loss for loss in all_losses.values() if isinstance(loss, torch.Tensor)])
@@ -1178,459 +731,6 @@ class Trainer(BaseTrainer):
             if self.args.gradient_max_norm > 0.0:
                 torch.nn.utils.clip_grad_norm_(self.model.module.optimizable_parms(), max_norm=self.args.gradient_max_norm, norm_type=2)
             self.optimizer_model.step()
-
-    def visualize(self, mode='train', val_idx=0):
-        if mode == 'train':
-            key = "_augmented"
-        else:
-            key = "" # timo had validation with augmented images as well
-        
-        with torch.no_grad():
-            for idx in range(len(self.inputs['images']))[:1]:
-                # if we have base model
-                if self.args.enable_local:
-                    self.global_points_base = self.coarse_results['vertices']
-                    reconstructed_vertices_base = to_numpy(self.global_points_base[idx])
-                else:
-                    if hasattr(self, 'base_model'):
-                        self.base_model.eval()
-                        self.base_results = self.base_model(self.inputs['images'], self.inputs['camera_intrinsics'], self.inputs['camera_extrinsics'], 
-                                                            camera_distortions=self.inputs['camera_distortions'])
-                        self.global_points_base = self.base_results['vertices']
-                        reconstructed_vertices_base = to_numpy(self.global_points_base[idx])
-
-                target_vertices = to_numpy(self.target_vertices[idx])
-                
-                reconstructed_vertices = to_numpy(self.global_points[idx])
-                
-                faces = to_numpy(self.faces)
-
-                vertex_distance = np.linalg.norm(target_vertices-reconstructed_vertices, axis=-1)
-
-
-                # After you compute reconstructed_* and faces
-                reconstructed_vertices_pliks = None
-                if hasattr(self, 'pliks_out') and self.pliks_out is not None:
-                    # V_fit is the FLAME-reprojected mesh from the recovered params (already aligned to your vertex space)
-                    reconstructed_vertices_pliks = to_numpy(self.pliks_out['V_fit'][idx])
-
-                reconstructed_vertices_pliks_flame = None
-                if hasattr(self, 'pliks_out') and self.pliks_out is not None and 'V_flame_mm' in self.pliks_out:
-                    # V_fit is the FLAME-reprojected mesh from the recovered params (already aligned to your vertex space)
-                    reconstructed_vertices_pliks_flame = to_numpy(self.pliks_out['V_flame_mm'][idx])
-
-
-                scan_vertices = self.data['v_scan'][idx].to(self.device).unsqueeze(0)
-                predicted_faces = torch.Tensor(self.faces).to(self.device)
-
-                # Compute scan colors for main model (only if available)
-                vertex_colors_scan = None
-                if hasattr(self, 'global_points') and self.global_points is not None:
-                    predicted_vertices = self.global_points[idx].unsqueeze(0).float()
-                    vertex_colors_scan = compute_s2m_distance(scan_vertices, predicted_vertices, predicted_faces, masks=self.flame_masks_triangles)['full']
-                    vertex_colors_scan = dist_to_rgb(vertex_colors_scan.detach().cpu().numpy(), min_dist=0.0, max_dist=3.0)
-
-                # Base model scan colors
-                vertex_colors_scan_base = None
-                if hasattr(self, 'global_points_base'):
-                    predicted_vertices_base = self.global_points_base[idx].unsqueeze(0).float()
-                    vertex_colors_scan_base = compute_s2m_distance(scan_vertices, predicted_vertices_base, predicted_faces, masks=self.flame_masks_triangles)['full']
-                    vertex_colors_scan_base = dist_to_rgb(vertex_colors_scan_base.detach().cpu().numpy(), min_dist=0.0, max_dist=3.0)
-
-                # FLAME scan colors
-
-
-                vertex_colors_scan_pliks = None
-                if reconstructed_vertices_pliks is not None:
-                    predicted_vertices_pliks = torch.from_numpy(reconstructed_vertices_pliks).unsqueeze(0).float().to(self.device)
-                    vertex_colors_scan_pliks = compute_s2m_distance(
-                        scan_vertices, predicted_vertices_pliks, predicted_faces, masks=self.flame_masks_triangles
-                    )['full']
-                    vertex_colors_scan_pliks = dist_to_rgb(vertex_colors_scan_pliks.detach().cpu().numpy(), min_dist=0.0, max_dist=3.0)
-
-                scan_vertices = self.data['v_scan'][idx]
-
-                for view_id in self.visualization_view_ids:
-                    
-                    if view_id >= self.data['color_images'][idx].shape[0]:
-                        continue
-                    input_image = to_numpy(self.data[f'color_images{key}'][idx][view_id].permute(1,2,0))
-                    camera_intrinsics = to_numpy(self.data[f'color_camera_intrinsics{key}'][0][view_id])
-                    camera_extrinsics = to_numpy(self.data['color_camera_extrinsics'][idx][view_id])
-                    radial_distortion = to_numpy(self.data['color_camera_distortions'][idx][view_id]) 
-
-                    if mode == 'train':
-                        input_image = self.dataset_train.denormalize_image(input_image)
-                    else:
-                        input_image = self.dataset_val.denormalize_image(input_image)
-
-                    relative_view_id = np.where(self.current_batch_view_ids==view_id)[0][0]
-
-                    if self.args.enable_diff_rendering:
-                        gt_normals = to_numpy(self.normal_maps_gt_01[idx][relative_view_id].permute(1,2,0))
-                        # gt_normals = (gt_normals + 1.0) / 2.0
-                        gt_normals = (255*gt_normals).astype(np.uint8)
-
-                        depth_gt = self.depth_maps_gt[idx][relative_view_id].cpu().numpy().squeeze(-1)
-                        depth_gt = (depth_gt - depth_gt.min()) / (depth_gt.max() - depth_gt.min())
-                        depth_gt = (255*depth_gt).astype(np.uint8)
-                        depth_gt = np.stack((depth_gt, depth_gt, depth_gt), axis=-1)  # Convert to 3-channel image
-                        
-                        point_maps_gt = self.pointmaps_gt[idx][relative_view_id].cpu().numpy()
-                        point_maps_gt, _min, _max = pointmap_to_rgb(point_maps_gt)
-
-
-                    if self.args.enable_diff_rendering and hasattr(self, 'normal_maps_pred') and self.normal_maps_pred is not None:
-                        pred_normals = to_numpy(self.normal_maps_pred[idx][relative_view_id].permute(1,2,0))
-
-                        # pred_normals = (pred_normals + 1.0) / 2.0
-                        pred_normals = (255*pred_normals).astype(np.uint8)
-                        pred_normals = np.clip(pred_normals, 0, 255)
-
-                        normals_loss_per_pixel = self.normals_loss_per_pixel[idx][relative_view_id].cpu().numpy()
-                        height, width = normals_loss_per_pixel.shape
-                        normals_loss_per_pixel_vis = dist_to_rgb(normals_loss_per_pixel.reshape(-1), min_dist=0.0, max_dist=3)
-                        normals_loss_per_pixel_vis = normals_loss_per_pixel_vis.reshape(height, width, 3)
-
-                        point_map_loss_per_pixel = self.point_maps_loss_per_pixel[idx][relative_view_id].cpu().numpy()
-                        height, width = point_map_loss_per_pixel.shape
-                        point_map_loss_per_pixel_vis = dist_to_rgb(point_map_loss_per_pixel.reshape(-1), min_dist=0.0, max_dist=3)
-                        point_map_loss_per_pixel_vis = point_map_loss_per_pixel_vis.reshape(height, width, 3)
-
-                        depth_maps_loss_per_pixel = self.depth_maps_loss_per_pixel[idx][relative_view_id].cpu().numpy()
-                        height, width = depth_maps_loss_per_pixel.shape
-                        depth_maps_loss_per_pixel_vis = dist_to_rgb(depth_maps_loss_per_pixel.reshape(-1), min_dist=0.0, max_dist=3)
-                        depth_maps_loss_per_pixel_vis = depth_maps_loss_per_pixel_vis.reshape(height, width, 3)
-
-                        # normal_geo_angle_map_per_pixel = self.normal_geo_angle_map[idx][relative_view_id].cpu().numpy()
-                        # height, width = normal_geo_angle_map_per_pixel.shape
-                        # normal_geo_angle_map_per_pixel_vis = dist_to_rgb(normal_geo_angle_map_per_pixel.reshape
-                        #                                                 (-1), min_dist=0.0, max_dist=6.0)
-                        # normal_geo_angle_map_per_pixel_vis = normal_geo_angle_map_per_pixel_vis.reshape(height, width, 3)
-
-                        depth_vis = self.depth_maps_pred[idx][relative_view_id].cpu().numpy()
-                        depth_vis = (depth_vis - depth_vis.min()) / (depth_vis.max() - depth_vis.min())
-                        depth_vis = (255*depth_vis).astype(np.uint8)
-                        depth_vis = np.stack((depth_vis, depth_vis, depth_vis), axis=-1)  # Convert to 3-channel image
-
-                        point_maps_pred = self.pointmaps_pred[idx][relative_view_id].cpu().numpy()
-                        point_maps_pred, _, _ = pointmap_to_rgb(point_maps_pred, _min,_max)
-
-                        # --- NEW: normals gradient visualizations (main) ---
-                        normals_grad_pp = getattr(self, 'normals_grad_loss_per_pixel', None)
-                        if normals_grad_pp is not None:
-                            normals_grad_pp = normals_grad_pp[idx][relative_view_id].cpu().numpy()
-                            H, W = normals_grad_pp.shape
-                            normals_grad_pp_vis = dist_to_rgb(normals_grad_pp.reshape(-1), min_dist=0.0, max_dist=3.0).reshape(H, W, 3)
-
-                            grad_mag_pred = getattr(self, 'normals_grad_mag_pred', None)
-                            grad_mag_gt   = getattr(self, 'normals_grad_mag_gt', None)
-                            if grad_mag_pred is not None and grad_mag_gt is not None:
-                                gmp = grad_mag_pred[idx][relative_view_id].cpu().numpy()
-                                gmg = grad_mag_gt[idx][relative_view_id].cpu().numpy()
-
-                                def to_gray3(x):
-                                    x = (x - x.min()) / (x.max() - x.min() + 1e-8)
-                                    x = (255 * x).astype(np.uint8)
-                                    return np.stack((x, x, x), axis=-1)
-
-                                normals_grad_mag_pred_vis = to_gray3(gmp)
-                                normals_grad_mag_gt_vis   = to_gray3(gmg)
-                        # --- END NEW ---
-
-
-
-
-
-                    input_image = (255*input_image).astype(np.uint8)
-
-                    camera_args = {
-                        'camera_intrinsics': camera_intrinsics,
-                        'camera_extrinsics': camera_extrinsics,
-                        'radial_distortion': radial_distortion,
-                        'frustum': {'near': 0.01, 'far': 3000.0},
-                        'image_size': input_image.shape[:2]
-                    }
-
-                    target_rendering = render_mesh(vertices=target_vertices, faces=faces, vertex_colors=None, **camera_args)
-                    
-                    # Only render main model if available
-                    reconstruction_rendering = None
-                    if reconstructed_vertices is not None:
-                        reconstruction_rendering = render_mesh(vertices=reconstructed_vertices, faces=faces, vertex_colors=None, needs_projection=True, **camera_args)
-
-
-                    # Only render error if we have main model predictions
-                    target_error_rendering = None
-                    if vertex_colors_scan is not None:
-                        target_error_rendering = render_mesh(vertices=scan_vertices, faces=self.data['f_scan'][idx], vertex_colors=vertex_colors_scan, **camera_args)
-                    
-                    base_error_rendering = None
-                    if hasattr(self, 'base_model') and vertex_colors_scan_base is not None:
-                        base_error_rendering = render_mesh(vertices=scan_vertices, faces=self.data['f_scan'][idx], vertex_colors=vertex_colors_scan_base, **camera_args)
-                    
-                    base_reconstruction_rendering = None
-                    if hasattr(self, 'base_model'):
-                        base_reconstruction_rendering = render_mesh(vertices=reconstructed_vertices_base, faces=faces, vertex_colors=None, needs_projection=True, **camera_args)
-
-                    pliks_reconstruction_rendering = None
-                    if reconstructed_vertices_pliks is not None:
-                        pliks_reconstruction_rendering = render_mesh(vertices=reconstructed_vertices_pliks, faces=faces, vertex_colors=None, needs_projection=True, **camera_args)
-
-                    pliks_flame_reconstruction_rendering = None
-                    if reconstructed_vertices_pliks_flame is not None:
-                        pliks_flame_reconstruction_rendering = render_mesh(vertices=reconstructed_vertices_pliks_flame, faces=faces, vertex_colors=None, needs_projection=True, **camera_args)
-
-                    vertex_colors_scan_pliks = None
-                    if reconstructed_vertices_pliks is not None:
-                        pliks_error_rendering = render_mesh(vertices=scan_vertices, faces=self.data['f_scan'][idx], vertex_colors=vertex_colors_scan_pliks, **camera_args)
-
-                    # FLAME renderings
-                    flame_reconstruction_rendering = None
-                    flame_error_rendering = None
-
-                    if 'f_scan' in self.data:
-                        target_scan = render_mesh(vertices=scan_vertices, faces=self.data['f_scan'][idx], vertex_colors=None, **camera_args)
-                    else:
-                        target_scan = render_mesh(vertices=scan_vertices, faces=None, vertex_colors=None, **camera_args)
-
-                    dense_gt_image = None
-                    dense_pred_image = None
-
-                    vis_landmarks = True
-                    if vis_landmarks:
-                        vis_image = input_image.copy()
-                        vis_image_pred = input_image.copy()
-
-                        landmarks_dense_mediapipe = to_numpy(self.landmarks_dense_mediapipe[idx][relative_view_id])
-                        for i in range(landmarks_dense_mediapipe.shape[0]):
-                            vis_image = cv2.circle(vis_image, (int(landmarks_dense_mediapipe[i][0]), int(landmarks_dense_mediapipe[i][1])), 2, (255, 0, 255), -1)
-
-                        projected_landmarks_mediapipe = None
-                        if hasattr(self, 'global_landmarks_projected_dense_mediapipe') and self.global_landmarks_projected_dense_mediapipe is not None:
-                            projected_landmarks_mediapipe = to_numpy(self.global_landmarks_projected_dense_mediapipe[idx][relative_view_id])
-                            for i in range(projected_landmarks_mediapipe.shape[0]):
-                                vis_image_pred = cv2.circle(vis_image_pred, (int(projected_landmarks_mediapipe[i][0]), int(projected_landmarks_mediapipe[i][1])), 2, (255, 0, 0), -1)   
-
-                        # target_landmarks = to_numpy(self.landmarks[idx][relative_view_id])
-                        # target_landmarks_mediapipe = to_numpy(self.landmarks_mediapipe[idx][relative_view_id])
-                        # for i in range(0,17):
-                        #     vis_image = cv2.circle(vis_image, (int(target_landmarks[i][0]), int(target_landmarks[i][1])), 3, (0, 255, 0), -1)
-
-                        # for i in range(target_landmarks_mediapipe.shape[0]):
-                        #     vis_image = cv2.circle(vis_image, (int(target_landmarks_mediapipe[i][0]), int(target_landmarks_mediapipe[i][1])), 3, (0, 255, 255), -1)
-
-                        # if hasattr(self, 'global_landmarks_projected') and self.global_landmarks_projected is not None:
-                        #     projected_landmarks = to_numpy(self.global_landmarks_projected[idx][relative_view_id])
-                        #     for i in range(projected_landmarks.shape[0]):
-                        #         vis_image = cv2.circle(vis_image, (int(projected_landmarks[i][0]), int(projected_landmarks[i][1])), 3, (255, 0, 0), -1)
-
-                        # if hasattr(self, 'global_landmarks_projected_mp') and self.global_landmarks_projected_mp is not None:
-                        #     projected_landmarks = to_numpy(self.global_landmarks_projected_mp[idx][relative_view_id])
-                        #     for i in range(projected_landmarks.shape[0]):
-                        #         vis_image = cv2.circle(vis_image, (int(projected_landmarks[i][0]), int(projected_landmarks[i][1])), 3, (255, 0, 0), -1)
-                        
-
-                        # FLAME landmarks (red circles)
-
-                        if getattr(self, 'landmarks_dense', None) is not None:
-                            dense_gt = to_numpy(self.landmarks_dense[idx][relative_view_id])
-                            view_mask_val = None
-                            if getattr(self, 'landmarks_dense_mask', None) is not None:
-                                view_mask_val = float(to_numpy(self.landmarks_dense_mask[idx][relative_view_id]).item())
-                            if dense_gt.shape[0] > 0 and (view_mask_val is None or view_mask_val > 0):
-                                colors = get_dense_vertex_colors(dense_gt.shape[0], self.flame_masks)
-                                base_rgb = (np.ones_like(input_image)*255.0).astype(np.uint8)
-                                base_rgb = input_image.copy()
-                                gt_bgr = cv2.cvtColor(base_rgb.copy(), cv2.COLOR_RGB2BGR)
-                                dense_gt_drawn = draw_dense_points(gt_bgr.copy(), dense_gt, colors)
-                                dense_gt_image = cv2.cvtColor(dense_gt_drawn, cv2.COLOR_BGR2RGB)
-
-                                dense_pred_image = None
-                                if getattr(self, 'global_landmarks_projected_dense', None) is not None:
-                                    dense_pred = to_numpy(self.global_landmarks_projected_dense[idx][relative_view_id])
-                                    pred_bgr = draw_dense_points(gt_bgr.copy(), dense_pred, colors)
-                                    dense_pred_image = cv2.cvtColor(pred_bgr, cv2.COLOR_BGR2RGB)
-
-                                dense_pred_out_image = None
-                                if getattr(self, 'global_landmarks_projected_dense_out', None) is not None:
-                                    dense_pred = to_numpy(self.global_landmarks_projected_dense_out[idx][relative_view_id])
-                                    pred_bgr = draw_dense_points(gt_bgr.copy(), dense_pred, colors)
-                                    dense_pred_out_image = cv2.cvtColor(pred_bgr, cv2.COLOR_BGR2RGB)
-
-   
-                    else:
-                        vis_image = input_image.copy()
-
-
-                    # Pair up images and labels
-                    pairs = [
-                        (input_image, "Input"),
-                        *([(dense_gt_image, "Dense GT")] if dense_gt_image is not None else []),
-                        *([(dense_pred_image, "Dense Pred")] if dense_pred_image is not None else []),
-                        *([(dense_pred_out_image, "Dense Pred Out")] if dense_pred_out_image is not None else []),
-                        (target_scan, "Target Scan"),
-                        (target_rendering, "Target"),
-                        *([(base_reconstruction_rendering, "Base Recon")] if base_reconstruction_rendering is not None else []),
-                        *([(reconstruction_rendering, "Recon")] if reconstruction_rendering is not None else []),
-                        *([(flame_reconstruction_rendering, "FLAME Recon")] if flame_reconstruction_rendering is not None else []),
-                        *([(target_error_rendering, "Error")] if target_error_rendering is not None else []),
-                        *([(base_error_rendering, "Base Error")] if base_error_rendering is not None else []),
-                        *([(flame_error_rendering, "FLAME Error")] if flame_error_rendering is not None else []),
-                        *([(pred_normals, "Pred Normals")] if self.args.enable_diff_rendering and hasattr(self, 'normal_maps_pred') and self.normal_maps_pred is not None else []),
-                        *([(gt_normals, "GT Normals")] if self.args.enable_diff_rendering and hasattr(self, 'normal_maps_pred') and self.normal_maps_pred is not None else []),
-                        *([(normals_loss_per_pixel_vis, "Normals Loss")] if self.args.enable_diff_rendering and hasattr(self, 'normal_maps_pred') and self.normal_maps_pred is not None else []),
-                        # *([(normal_geo_angle_map_per_pixel_vis, "Normals Geo Angle")] if self.args.enable_diff_rendering and hasattr(self, 'normal_geo_angle_map_per_pixel') and self.normal_geo_angle_map_per_pixel is not None else []),
-                        *([(depth_vis, "Pred Depth")] if self.args.enable_diff_rendering and hasattr(self, 'depth_maps_pred') and self.depth_maps_pred is not None else []),
-                        *([(depth_gt, "GT Depth")] if self.args.enable_diff_rendering and hasattr(self, 'depth_maps_pred') and self.depth_maps_pred is not None else []),
-                        *([(depth_maps_loss_per_pixel_vis, "Depth Loss")] if self.args.enable_diff_rendering and hasattr(self, 'depth_maps_pred') and self.depth_maps_pred is not None else []),
-                        *([(point_maps_pred, "Pred PointMap")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
-                        *([(point_maps_gt, "GT PointMap")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
-                        *([(point_map_loss_per_pixel_vis, "PointMap Loss")] if self.args.enable_diff_rendering and hasattr(self, 'pointmaps_pred') and self.pointmaps_pred is not None else []),
-                        *([(pliks_reconstruction_rendering, "PLIKS Recon")] if pliks_reconstruction_rendering is not None else []),   # <-- NEW
-                        *([(pliks_error_rendering, "PLIKS Error")] if reconstructed_vertices_pliks is not None else []),  # <-- NEW
-                        *([(pliks_flame_reconstruction_rendering, "PLIKS FLAME Recon")] if pliks_flame_reconstruction_rendering is not None else []),  # <-- NEW
-                        *([(normals_grad_mag_pred_vis, "Pred Normals ∇")] if 'normals_grad_mag_pred_vis' in locals() else []),
-                        *([(normals_grad_mag_gt_vis,   "GT Normals ∇")]   if 'normals_grad_mag_gt_vis' in locals() else []),
-                        *([(normals_grad_pp_vis,       "Normals ∇ Loss")] if 'normals_grad_pp_vis' in locals() else []),
-                        *([(normals_grad_mag_pred_vis_flame, "FLAME Normals ∇")] if 'normals_grad_mag_pred_vis_flame' in locals() else []),
-                        *([(normals_grad_mag_gt_vis_flame,   "FLAME GT Normals ∇")] if 'normals_grad_mag_gt_vis_flame' in locals() else []),
-                        *([(normals_grad_pp_vis_flame,       "FLAME Normals ∇ Loss")] if 'normals_grad_pp_vis_flame' in locals() else []),
-                        *([(vis_image, "Input Image with Landmarks")] if 'vis_image' in locals() else []),
-                        *([(vis_image_pred, "Input Image with Predicted Landmarks")] if 'vis_image_pred' in locals() else []),
-                    ]
-
-                    images, labels = map(list, zip(*pairs))
-
-                    labeled_images = add_labels_to_images(images, labels)
-
-                    # Grid config: 4 rows to accommodate FLAME results
-                    n = len(labeled_images)
-                    nrows = 4
-                    ncols = math.ceil(n / nrows)
-
-                    # Pad the list if needed to make a full grid
-                    while len(labeled_images) < nrows * ncols:
-                        h, w, c = labeled_images[0].shape
-                        labeled_images.append(np.ones((h, w, c), dtype=np.uint8) * 255)  # white padding image
-
-                    # Organize into rows
-                    rows = []
-                    for i in range(nrows):
-                        row_imgs = labeled_images[i*ncols:(i+1)*ncols]
-                        rows.append(np.hstack(row_imgs))
-
-                    # Stack rows to form final image
-                    visualization = np.vstack(rows)
-                    visualization = visualization.transpose(2, 0, 1)  # C x H x W
-
-                    os.makedirs(os.path.join(self.directory_output, mode + '_images'), exist_ok=True)
-                    # if mode == 'val':
-                    cv2.imwrite(f'{self.directory_output}/{mode}_images/view_id_{view_id:02d}_{val_idx}.jpg', cv2.cvtColor(visualization.transpose(1, 2, 0).astype(np.uint8), cv2.COLOR_RGB2BGR))
-                        # cv2.imwrite(f'{self.directory_output}/{mode}_images/view_id_{view_id:02d}_{self.global_step}_{idx}.jpg', cv2.cvtColor(visualization.transpose(1, 2, 0).astype(np.uint8), cv2.COLOR_RGB2BGR))
-
-
-                    if self.args.wandb and idx == 0 and (self.global_step % 500 == 0):
-                        wandb.log({f'{mode.capitalize()}/view_id_{view_id:02d}': wandb.Image(visualization.transpose(1, 2, 0))}, step=self.global_step)
-
-    def visualize_multiple_front(self, vertices_list, faces_list, labels, out_path=None, sample_idx=0,
-                                image_size=(800, 800), max_err_mm=3.0):
-        """
-        Build one big HxW row:
-        [ mesh_0 gray | mesh_0 error_on_scan | mesh_1 gray | mesh_1 error_on_scan | ... ]
-        - vertices_list: list of (V,3) np.float32/float64 arrays (pred meshes)
-        - faces_list:    list of (F,3) int arrays
-        - out_path:      where to save (defaults into {self.directory_output}/val_images)
-        - sample_idx:    which scan from current batch to use as reference
-        - image_size:    per-tile size (H,W)
-        - max_err_mm:    colorbar max for dist_to_rgb
-        """
-        import numpy as np, cv2, torch
-        from pytorch3d.transforms import axis_angle_to_matrix
-
-        assert len(vertices_list) == len(faces_list), "vertices_list and faces_list must have same length."
-
-        # --- Camera (front-ish) ---
-        # Base intrinsics from current batch; then zoom-in by s
-        K = self.inputs['camera_intrinsics'][0, 0].detach().cpu().numpy().copy()
-        s = 3.0
-        K[0, 0] *= s; K[1, 1] *= s
-        K[0, 2] *= s; K[1, 2] *= s
-
-        # Start from an existing extrinsic, then overwrite with a canonical head-on pose
-        Extr = self.inputs['camera_extrinsics'][0, 0].detach().cpu().numpy().copy()
-        # Slight tilt from above; feel free to tweak the 1st component
-        R = axis_angle_to_matrix(torch.tensor([[3.125, 0.0, 0.0]], dtype=torch.float32)).squeeze(0).numpy()
-        Extr[:3, :3] = R
-        Extr[0, 3] = -50.0
-        Extr[1, 3] = -38.0
-        Extr[2, 3] = 1350.0
-
-        # --- Scan geometry for error coloring ---
-        if isinstance(self.data['v_scan'], list):
-            scan_v = self.data['v_scan'][sample_idx].detach().cpu()
-            scan_f = self.data['f_scan'][sample_idx].detach().cpu()
-        else:
-            scan_v = self.data['v_scan'][sample_idx].detach().cpu()
-            scan_f = self.data['f_scan'][sample_idx].detach().cpu()
-        scan_v_np = scan_v.numpy()
-        scan_f_np = scan_f.numpy()
-
-        tiles = []
-        H, W = image_size
-
-        for idx, (V_np, F_np) in enumerate(zip(vertices_list, faces_list)):
-            # 1) Gray render of the predicted mesh
-            gray_img = render_mesh(
-                vertices=V_np, faces=F_np, vertex_colors=None,
-                camera_extrinsics=Extr, camera_intrinsics=K,
-                radial_distortion=None, image_size=image_size, needs_projection=True
-            )
-
-            # 2) Error colors on the scan w.r.t. the predicted mesh
-            with torch.no_grad():
-                pred_v = torch.as_tensor(V_np, dtype=torch.float32, device=self.device).unsqueeze(0)
-                pred_f = torch.as_tensor(F_np, dtype=torch.int64, device=self.device)
-                scan_v_t = scan_v.unsqueeze(0).to(self.device)
-
-                dist = compute_s2m_distance(
-                    scan_v_t, pred_v, pred_f, masks=self.flame_masks_triangles
-                )['full']  # (N_scan_v,)
-                err_rgb = dist_to_rgb(
-                    dist.detach().cpu().numpy(), min_dist=0.0, max_dist=1.0
-                )  # (N_scan_v, 3) in [0,1]
-
-            err_img = render_mesh(
-                vertices=scan_v_np, faces=scan_f_np, vertex_colors=err_rgb,
-                camera_extrinsics=Extr, camera_intrinsics=K,
-                radial_distortion=None, image_size=image_size, needs_projection=True
-            )
-
-            # Label overlays
-            def put_label(img, txt):
-                out = img.copy()
-                cv2.putText(out, txt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 3, cv2.LINE_AA)
-                cv2.putText(out, txt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 1, cv2.LINE_AA)
-                return out
-
-            gray_img = put_label(gray_img, f"Mesh {labels[idx]} gray")
-            err_img  = put_label(err_img,  "Scan error")
-
-            # pair horizontally
-            pair = np.hstack([gray_img, err_img])
-            tiles.append(pair)
-
-        if not tiles:
-            return
-
-        row = np.hstack(tiles)
-        os.makedirs(os.path.join(self.directory_output, 'val_images'), exist_ok=True)
-        if out_path is None:
-            out_path = os.path.join(self.directory_output, 'val_images',
-                                    f'front_row_{self.global_step:06d}.jpg')
-        cv2.imwrite(out_path, cv2.cvtColor(row, cv2.COLOR_RGB2BGR))
-        print(f'[visualize_multiple_front] Saved: {out_path}')
-
 
     def export_mesh(self, mode, idx):
 
@@ -1730,11 +830,6 @@ class Trainer(BaseTrainer):
         validation_losses_per_epoch = {}
         validation_losses = {}
 
-        vertices_for_viz = []
-        faces_for_viz = []
-        labels_for_viz = []
-        VIZ_PAPER = True
-
         steps_to_gather = [5, 10, 20, 50, 100]
         # steps_to_gather = [0, 50, -100] #, 50, -100]
         gather_intermediate = True
@@ -1814,9 +909,6 @@ class Trainer(BaseTrainer):
                             params.append(p)
                     opt = torch.optim.AdamW(params, lr=refinement_lr)
 
-            if VIZ_PAPER:
-                self.forward_tempeh()
-
             if 0 in steps_to_gather:
                 with torch.no_grad():
                     refine_model.eval()
@@ -1853,6 +945,8 @@ class Trainer(BaseTrainer):
             # 4) N refinement steps on this single sample
             # from tqdm import tqdm
             # for t in tqdm(range(refinement_steps)):
+            vertices_for_viz, faces_for_viz, labels_for_viz = [], [], []
+
             for t in range(refinement_steps):
                 self.losses = {}
                 refine_model.eval()
@@ -1871,27 +965,11 @@ class Trainer(BaseTrainer):
                 #     pprint.pprint(d)
                     
 
-                if VIZ_PAPER:
+                if refine_vis:
                     if t == 0:
-                        # vertices_for_viz.append(self.coarse_points_tempeh[0].cpu())
-                        # faces_for_viz.append(self.faces.cpu())
-                        # labels_for_viz.append(f'TEMPEH GLOBAL')
-
-                        # vertices_for_viz.append(self.coarse_points[0].detach().cpu())
-                        # faces_for_viz.append(self.faces.detach().cpu())
-                        # labels_for_viz.append(f'Initial Coarse')
-
-                        vertices_for_viz.append(self.global_points_tempeh[0].detach().cpu())
-                        faces_for_viz.append(self.faces.detach().cpu())
-                        labels_for_viz.append(f'TEMPEH LOCAL')
-
                         vertices_for_viz.append(self.global_points[0].detach().cpu())
                         faces_for_viz.append(self.faces.detach().cpu())
-                        labels_for_viz.append(f'Initial Refined')
-
-
-                    # if t == 10 or t == 20 or t == 50 or t == refinement_steps -1:
-                    # if t == refinement_steps -1:
+                        labels_for_viz.append('Initial Refined')
                     if t in steps_to_gather:
                         vertices_for_viz.append(self.global_points[0].detach().cpu())
                         faces_for_viz.append(self.faces.detach().cpu())
@@ -1939,32 +1017,23 @@ class Trainer(BaseTrainer):
                                     validation_losses_per_epoch[t][distance_key] = []
 
                                 validation_losses_per_epoch[t][distance_key].extend(vals)
-                                # print lengths
-                                print(f'Key: {distance_key}, vals length: {len(vals)}, iteration: {t},  total length: {len(validation_losses_per_epoch[t][distance_key])}')
                         
 
-            if VIZ_PAPER:
-
-                print('Saving refinement visualization for paper...')
-                # raise
+            # lightweight vis (optional) + front-row mesh comparison
+            if refine_vis and (idx % self.args.refine_visualization_freq == 0 or idx == num_items - 1):
                 vertices_for_viz.append(self.data['v_registration'][0].cpu())
                 faces_for_viz.append(self.data['f_registration'][0].cpu())
-                labels_for_viz.append(f'Traditional Registration')
-
+                labels_for_viz.append('Traditional Registration')
 
                 vertices_for_viz.append(self.data['v_scan'][0].cpu())
                 faces_for_viz.append(self.data['f_scan'][0].cpu())
-                labels_for_viz.append(f'Initial Scan')
+                labels_for_viz.append('Initial Scan')
 
-                self.visualize_multiple_front(
-                    vertices_list=vertices_for_viz, faces_list=faces_for_viz, labels=labels_for_viz
+                self.visualizer.multi_front(
+                    vertices_list=vertices_for_viz, faces_list=faces_for_viz,
+                    labels=labels_for_viz, dataset_idx=idx,
                 )
 
-                vertices_for_viz = []
-                faces_for_viz = []
-                
-            # lightweight vis (optional)
-            if refine_vis and (idx % self.args.refine_visualization_freq == 0 or idx == num_items - 1):
                 self._save_color_grid(idx)
                 self.export_mesh('val', idx)
 
@@ -1984,8 +1053,6 @@ class Trainer(BaseTrainer):
 
                     vals = distances[key]
                     validation_losses[distance_key].extend(vals)
-                    # print lengths
-                    print(f'Key: {distance_key}, vals length: {len(vals)}, total length: {len(validation_losses[distance_key])}')
                 
             # Final summary (convert & print once)
 

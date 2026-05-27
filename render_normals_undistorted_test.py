@@ -169,10 +169,11 @@ for sample in tqdm(dataloader, desc="Rendering normals", total=len(dataloader)):
         color_images = sample[f'{suffix}_images'][0]
         print(radial_distortions)
 
-        v, d = mesh_helper.render_normals_3(vertices, camera_intrinsics, camera_extrinsics, radial_distortions=radial_distortions,
+        render_out = mesh_helper.render_normals_and_depth(vertices, camera_intrinsics, camera_extrinsics, radial_distortions=radial_distortions,
                                         depth_rendering_height=color_images[0].shape[1],
                                         depth_rendering_width=color_images[0].shape[2],
                                         return_depth=True)
+        v, d = render_out['normal_images'], render_out['depth_images']
 
         # print("Color images shape:", color_images.shape, "v shape:", v.shape)
         if visualize:

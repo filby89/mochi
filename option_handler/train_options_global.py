@@ -159,6 +159,18 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg(cate='model', abbr='refine-lr', name='refinement-lr', type=float, default=1e-4)
         self.add_arg(cate='model', abbr='refine-v', name='refine-vis', type=bool, default=False)
         self.add_arg(cate='model', abbr='refine-vis-freq', name='refine-visualization-freq', type=int, default=1)
+        self.add_arg(cate='model', abbr='vis-renderer', name='visualization-renderer', type=str, default='pyrender')
+        self.add_arg(cate='model', abbr='blender-bin', name='blender-bin', type=str, default='')
+        self.add_arg(cate='model', abbr='blender-script', name='blender-render-script', type=str, default='')
+        self.add_arg(cate='model', abbr='blender-scene', name='blender-scene', type=str, default='')
+        self.add_arg(cate='model', abbr='blender-samples', name='blender-samples', type=int, default=8)
+        self.add_arg(cate='model', abbr='blender-device', name='blender-cycles-device', type=str, default='OPTIX')
+        self.add_arg(cate='model', abbr='blender-keep', name='blender-keep-workdir', type=bool, default=False)
+        self.add_arg(cate='model', abbr='half-overlay', name='render-half-sides-overlay', type=bool, default=False)
+        self.add_arg(cate='model', abbr='half-overlay-samples', name='render-half-sides-overlay-samples', type=int, default=64)
+        self.add_arg(cate='model', abbr='half-overlay-meshes', name='render-half-sides-overlay-meshes', type=str, default='mochi')
+        self.add_arg(cate='model', abbr='half-overlay-hide', name='render-half-sides-overlay-extra-hide-indices-by-view-path', type=str, default='')
+        self.add_arg(cate='model', abbr='half-overlay-layout', name='render-half-sides-overlay-layout', type=str, default='v2')
 
         self.add_arg( cate='model', abbr='eval', name='evaluate', type=bool, default=False)
 

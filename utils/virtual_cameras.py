@@ -155,7 +155,7 @@ def render_depth_with_meshhelper(
             distortions = distortions[:, :3]
         radial = distortions.unsqueeze(0)
 
-    render_out = mesh_helper.render_lots_of_stuff(
+    render_out = mesh_helper.render_normals_and_depth(
         vertices,
         Ks_batch,
         extr_batch,

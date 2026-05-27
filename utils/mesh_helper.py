@@ -30,8 +30,6 @@ class MeshHelper:
     
         self.vertices_by_faces = MeshHelper.vertex_by_face(num_vertices, faces)
 
-        print(f"MeshHelper initialized with {num_vertices} vertices and {self.faces.shape} faces.")
-
     def face_vertices(self, vertices, faces):
         """ 
         :param vertices: [batch size, number of vertices, 3]
@@ -413,7 +411,7 @@ class MeshHelper:
         return torch.sparse_coo_tensor(indices, data, (num_vertices, faces.shape[0]),)
 
 
-    def render_lots_of_stuff(self, vertices, camera_intrinsics, camera_extrinsics, radial_distortions=None, depth_eps=3e-3, eps=1e-7, depth_rendering_height=200, depth_rendering_width=200,
+    def render_normals_and_depth(self, vertices, camera_intrinsics, camera_extrinsics, radial_distortions=None, depth_eps=3e-3, eps=1e-7, depth_rendering_height=200, depth_rendering_width=200,
                          return_depth=False, segmentation_masks=None, render_point_map=False, needs_projection=True, normalize_normals=False, **kwargs):
 
         device = vertices.device

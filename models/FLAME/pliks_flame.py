@@ -5,6 +5,7 @@
 from __future__ import annotations
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, Tuple, Dict
 from utils.mesh_renderer import render_mesh, dist_to_rgb, render_mesh_pixels
 import numpy as np
@@ -589,6 +590,75 @@ class PliksFlameSolver(nn.Module):
             out.update(R_root=R_root, t_root=t_root, V_fit_root=V_fit_root)
 
         return out
+
+    def compute_regularizers(
+        self,
+        pliks_out: dict,
+        global_points: torch.Tensor,
+        flame,
+        *,
+        weight_shape: float = 0.0,
+        weight_expression: float = 0.0,
+        weight_pose: float = 0.0,
+        weight_vertices: float = 0.0,
+        weight_vertices_edge: float = 0.0,
+        edge_loss_fn=None,
+        no_jaw: bool = False,
+        to_meters: bool = False,
+        unit_factor: float = 1000.0,
+    ):
+        """PLIKS regularization losses + FLAME-fitted vertices aligned to global_points.
+
+        Returns (losses_dict, V_flame_mm) where V_flame_mm is in the same unit as global_points.
+        """
+        from pytorch3d.transforms import matrix_to_axis_angle
+
+        beta_all = pliks_out['beta']
+        n_id, n_exp = flame.n_shape, flame.n_exp
+        beta_id  = beta_all[:, :n_id]
+        beta_exp = beta_all[:, n_id:n_id + n_exp]
+
+        Rk = pliks_out['Rk']
+        J  = flame.J_regressor.shape[0]
+
+        R_world = build_R_world_from_segments(Rk, self.seg_list, J)
+        R_rel   = world_to_relative_rotations(R_world, flame.parents)
+        aa_all  = matrix_to_axis_angle(R_rel)
+
+        NECK_ID, JAW_ID, LEYE_ID, REYE_ID = 1, 2, 3, 4
+        pose_params = torch.zeros(beta_all.shape[0], 3, device=beta_all.device)
+        neck_pose_params = aa_all[:, NECK_ID]
+        jaw_params = torch.zeros_like(aa_all[:, JAW_ID]) if no_jaw else aa_all[:, JAW_ID]
+        eye_pose_params = torch.cat([aa_all[:, LEYE_ID], aa_all[:, REYE_ID]], dim=-1)
+
+        out = flame.forward({
+            'shape_params':      beta_id,
+            'expression_params': beta_exp,
+            'pose_params':       pose_params,
+            'neck_pose_params':  neck_pose_params,
+            'jaw_params':        jaw_params,
+            'eye_pose_params':   eye_pose_params,
+        })
+        V_flame = out['vertices']
+
+        with torch.cuda.amp.autocast(enabled=False):
+            gp = global_points.float() if to_meters else global_points.float() / unit_factor
+            R_root, t_root = rigid_align_no_scale(V_flame.float(), gp)
+
+        V_flame_mm = (R_root[:, None] @ V_flame.unsqueeze(-1)).squeeze(-1) + t_root[:, None, :]
+        if not to_meters:
+            V_flame_mm = V_flame_mm * unit_factor
+
+        losses = {
+            'beta_regularizer_pliks':     (beta_id  ** 2).mean() * weight_shape,
+            'exp_regularizer_pliks':      (beta_exp ** 2).mean() * weight_expression,
+            'pose_regularizer_pliks':     aa_all.pow(2).sum(dim=(1, 2)).mean() * weight_pose,
+            'vertices_regularizer_pliks': F.mse_loss(V_flame_mm, global_points) * weight_vertices,
+        }
+        if edge_loss_fn is not None:
+            losses['vertices_regularizer_pliks_edge'] = edge_loss_fn(V_flame_mm, global_points) * weight_vertices_edge
+
+        return losses, V_flame_mm
 
 
 @torch.no_grad()

@@ -31,6 +31,13 @@ wandb/
 checkpoints/
 preprocessing_logs/
 *.pth
+
+# Downloaded FaMoS data (fetched via famos_download/ scripts)
+famos_download/data/
+data/downloads/
+data/training_data/
+data/test_data/
+data/test_data_subset/
 *.ckpt
 *.tar.gz
 

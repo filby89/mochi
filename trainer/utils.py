@@ -12,6 +12,13 @@ def to_mm(x):
 def to_m(x):
     return x/1000.0
 
+def pixels_to_uv(landmarks: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Map pixel-coord landmarks to normalized UV in [-1, 1]. Operates on (..., 0) and (..., 1)."""
+    out = landmarks.clone()
+    out[..., 0] = out[..., 0] / (width - 1) * 2.0 - 1.0
+    out[..., 1] = out[..., 1] / (height - 1) * 2.0 - 1.0
+    return out
+
 def random_pixel_mask(x: torch.Tensor, keep_prob=0.01, visibility_mask: torch.Tensor = None):
     B, C, H, W = x.shape
 

@@ -6,7 +6,9 @@ generate the directory layout the training code expects.
 
 ## 1. Obtain the FaMoS dataset
 
-Request and download the FaMoS data from the [FaMoS project page](https://tempeh.is.tue.mpg.de).
+Register at the [FaMoS / TEMPEH project page](https://tempeh.is.tue.mpg.de), agree to the
+license, and download the data with the fetch scripts in
+[`../famos_download/`](../famos_download/) (see `famos_download/README.md`).
 After unpacking you should have:
 
 ```

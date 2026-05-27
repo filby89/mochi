@@ -1,40 +1,49 @@
-# MoCHI: Multi-view Coarse-to-fine Head Inference
+<div align="center">
 
-Official implementation accompanying the CVPR submission. This release reproduces
-the four-stage training and test-time-optimization pipeline on FaMoS data.
+<h1>MOCHI</h1>
 
----
+<h3>Registration-Free Learnable Multi-View Capture of Faces<br>in Dense Semantic Correspondence</h3>
 
-## Repository layout
+<a href="https://filby89.github.io/mochi/" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Project_Page-green" alt="Project Page"></a>
+<a href="https://arxiv.org/abs/2605.01450" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/arXiv-2605.01450-b31b1b" alt="arXiv"></a>
+<a href="https://www.youtube.com/watch?v=-dicD0PMbC8" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Video-YouTube-red?logo=youtube&logoColor=red" alt="Video"></a>
 
-```
-mochi_rebuttal_public/
-├── trainer/                # entry points + training/refinement loops
-│   ├── train.py            # CLI for stages 1–3 (calls trainer.global_trainer.run)
-│   ├── train_refine.py     # CLI for stage 4 / TTO  (calls trainer.refiner.run)
-│   ├── global_trainer.py   # main training class
-│   ├── refiner.py          # test-time optimization class
-│   └── base_trainer.py     # shared base class
-├── option_handler/         # argparse-based CLI options
-├── models/                 # FLAME, model_aligner, perceptual losses
-├── modules/                # volumetric samplers, V2V networks, transformer,
-│                           #   resnet feature backbone (uresnet2)
-├── datasets/               # FaMoS multi-view dataset class
-├── utils/                  # rendering, mesh, losses, cameras
-├── assets/                 # FLAME models, masks, head template, data lists
-├── scripts/                # one-line stage launchers
-├── render_normals_undistorted_test.py   # FaMoS preprocessing script
-├── install.sh              # environment install (Python 3.10 + CUDA 12.4)
-├── requirements.txt
-└── README.md
-```
+<p>
+  <a href="https://filby89.github.io" target="_blank" rel="noopener noreferrer">Panagiotis P. Filntisis</a> &nbsp;·&nbsp;
+  <a href="https://georgeretsi.github.io" target="_blank" rel="noopener noreferrer">George Retsinas</a> &nbsp;·&nbsp;
+  <a href="https://radekd91.github.io" target="_blank" rel="noopener noreferrer">Radek Danecek</a> &nbsp;·&nbsp;
+  <a href="https://vanessik.github.io" target="_blank" rel="noopener noreferrer">Vanessa Sklyarova</a> &nbsp;·&nbsp;
+  <a href="https://robotics.ntua.gr/members/maragos/" target="_blank" rel="noopener noreferrer">Petros Maragos</a> &nbsp;·&nbsp;
+  <a href="https://sites.google.com/site/bolkartt/" target="_blank" rel="noopener noreferrer">Timo Bolkart</a>
+</p>
+
+<sub>CVPR 2026</sub>
+
+</div>
+
+<p align="center">
+  <img src="media/teaser.jpg" alt="MOCHI teaser" width="100%">
+  <br>
+  <em>MOCHI predicts topologically consistent 3D face meshes in dense semantic correspondence directly from multi-view images, and a test-time optimization (MOCHI-TTO) pass further sharpens the geometry.</em>
+</p>
 
 ---
 
-## 1. Environment setup
+MOCHI is a framework for predicting 3D face meshes from multi-view images **without requiring
+registered training data**. It enforces topological consistency through a pseudo-linear inverse
+kinematic solver (**PLIKS**), guides semantic alignment with dense keypoints from a
+synthetic-data-trained landmark detector, and is supervised with **pointmap- and normal-based
+losses** that avoid the training instabilities of standard distance metrics. An optional
+**test-time optimization (TTO)** pass refines the prediction per scene.
 
-The code targets Python 3.10 and CUDA 12.4. Create a fresh virtual environment
-and run the installer:
+This release reproduces the full pipeline on FaMoS data.
+
+---
+
+## 1. Installation
+
+The code targets **Python 3.10** and **CUDA 12.4**. Create a fresh environment and run the
+installer:
 
 ```bash
 python3.10 -m venv .venv
@@ -42,152 +51,89 @@ source .venv/bin/activate
 bash install.sh
 ```
 
-The installer pulls PyTorch 2.5.1 (cu124), pytorch3d 0.7.8, MPI-IS `mesh`,
-`liegroups` (vendored under `modules/liegroups`), kaolin, kornia, pyrender,
-trimesh, wandb, etc. The script clones MPI-IS `mesh` into `assets/software`
-and builds it; you need a working compiler toolchain.
+`install.sh` pulls PyTorch 2.5.1 (cu124), pytorch3d 0.7.8, MPI-IS `mesh`, kaolin, kornia,
+pyrender, trimesh, wandb, etc., and builds the vendored `liegroups` package under
+`modules/liegroups`. A working compiler toolchain is required. On a headless node, export
+`PYOPENGL_PLATFORM=egl` before launching to use EGL rendering.
 
-If you need a headless render (e.g. on a cluster compute node without an X
-server), `pyrender` defaults to EGL when `PYOPENGL_PLATFORM=egl` is exported
-before launch.
+## 2. FLAME assets
 
----
-
-## 2. Asset download
-
-The repo ships with these small project-specific assets under `assets/`:
-
-* `assets/template/sampling_template.obj`, `vertex_masks2.npz` — 5023-vertex
-  FLAME template + our region masks.
-* `assets/head_template.obj`, `assets/landmark_embedding.npy`,
-  `assets/{l,r}_eyelid.npy`, `assets/mediapipe_landmark_embedding/` — landmark
-  embeddings used by FLAME and pliks.
-* `assets/FLAME_masks/FLAME_masks_triangles.npy` — triangle-region masks.
-* `assets/FaMoS_fiveteen_test_subjects.json`,
-  `assets/fiveteen_subj__all_seq_frames_per_seq_10_test.json`,
-  `assets/meshes_list_test.json` — example data lists for refine / evaluation.
-
-The FLAME model files are **not** redistributed in this repo. Download them
-yourself from <https://flame.is.tue.mpg.de/> after accepting the license,
-then place them as follows:
+Small project-specific assets (template, region masks, landmark embeddings, example data lists)
+ship with the repo under `assets/`. The **FLAME model files are not redistributed** — download
+them from <https://flame.is.tue.mpg.de/> after accepting the license and place them as:
 
 ```
-assets/FLAME2023/flame2023.pkl           # FLAME 2023 generic
-assets/FLAME2023/flame2023_no_jaw.pkl    # FLAME 2023 with jaw locked (used by default)
-assets/FLAME_masks/FLAME_masks.pkl       # FLAME region masks
+assets/FLAME2023/flame2023_no_jaw.pkl    # loaded by default
+assets/FLAME2023/flame2023.pkl
+assets/FLAME_masks/FLAME_masks.pkl
 ```
 
-(`flame2023_no_jaw.pkl` is the model the trainer loads by default; see
-`base_trainer.py` and `pliks_flame_2.py`.)
+## 3. Data
 
----
+MOCHI uses the **FaMoS** dataset, released as part of
+[TEMPEH](https://tempeh.is.tue.mpg.de/). The trainer consumes it as **undistorted, pre-rendered
+multi-view RGB / normal / depth grids**, so preparation is two steps.
 
-## 3. Data preparation
-
-The training pipeline consumes pre-rendered, undistorted multi-view RGB,
-normal-map and depth-map grids from the FaMoS dataset. See
-[`datasets/preprocess.md`](datasets/preprocess.md) for the step-by-step
-procedure (downloading FaMoS, running `render_normals_undistorted_test.py`,
-expected output layout).
-
-The trainer expects the following directory hierarchy after preprocessing:
-
-```
-<grid_root>/
-├── color_images_v2/        # input RGB grids (one per view)
-├── color_normals_numpy/    # ground-truth normal maps (npy)
-├── color_depth/            # ground-truth depth maps
-├── color_cameras/          # per-frame camera intrinsics / extrinsics
-└── color_dense_landmarks/  # dense landmark predictions
-```
-
----
-
-## 4. Training stages
-
-The pipeline trains in three sequential stages, with an optional fourth
-test-time-optimization (TTO) pass. Convenience launchers live in
-[`scripts/`](scripts/) — edit the data paths at the top of each script and
-run:
+**a) Download FaMoS.** Register at <https://tempeh.is.tue.mpg.de/> and agree to the license,
+then use the (TEMPEH-provided) fetch scripts under [`famos_download/`](famos_download/) — see
+[`famos_download/README.md`](famos_download/README.md) for details:
 
 ```bash
-bash scripts/stage1_pretrain.sh
-bash scripts/stage2_coarse.sh    # depends on stage 1 checkpoint
-bash scripts/stage3_local.sh     # depends on stage 2 checkpoint
-bash scripts/stage4_refine.sh    # optional TTO; depends on stage 3 checkpoint
+cd famos_download
+bash fetch_test_subset.sh     # quick start: small paper test subset
+bash fetch_training_data.sh   # full training set (images, scans, FLAME registrations)
+bash fetch_test_data.sh       # full test set
+cd ..
 ```
 
-The exact CLI arguments reproduced by each script:
+**b) Preprocess into multi-view grids.** Follow [`datasets/preprocess.md`](datasets/preprocess.md),
+which uses [`render_normals_undistorted_test.py`](render_normals_undistorted_test.py) to
+undistort the views and render the ground-truth normal/depth grids the trainer reads, and
+documents the expected output layout.
 
-### Stage 1 — pretraining (no differentiable rendering)
+## 4. Training
+
+The model trains in three sequential stages, with an optional fourth test-time-optimization
+pass. Edit the data paths in [`scripts/_data_paths.sh`](scripts/_data_paths.sh), then run the
+stage launchers in order:
 
 ```bash
-python -m trainer.train \
-  -eid restart/coarse_nodifrs \
-  -print-freq 100 -val-freq 20000 -vis-freq 100 \
-  -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
-  --num-iterations 300000 \
-  -wpointr 0 -wp2s 0 -wlandd 1 \
-  -wshapereg 1e-3 -wexpreg 1e-3 \
-  -wvertregpliks 1e-3 -wvertregpliks-edge 0.1 \
-  -pliks True
+bash scripts/stage1_pretrain.sh   # coarse, no differentiable rendering
+bash scripts/stage2_coarse.sh     # coarse + differentiable rendering   (needs stage 1)
+bash scripts/stage3_local.sh      # local refinement                    (needs stage 2)
+bash scripts/stage4_refine.sh     # optional per-scene TTO              (needs stage 3)
 ```
 
-### Stage 2 — coarse with differentiable rendering
+Each script is a thin wrapper around the two entry points:
 
 ```bash
-python -m trainer.train \
-  -eid restart/coarse_difrs \
-  -print-freq 100 -val-freq 20000 -vis-freq 1000 \
-  -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
-  --num-iterations 300000 \
-  -wpointr 0 -wp2s 0 -wlandd 0.5 \
-  -wshapereg 1e-3 -wexpreg 1e-3 \
-  -wvertregpliks 1e-3 -wvertregpliks-edge 0.1 \
-  -pliks True \
-  -difr True -wpointmaps 10 -wnorm 10 \
-  --pretrained-path runs/coarse/restart/coarse_nodifrs/checkpoints/model_00309000.pth
+python -m trainer.train         # stages 1–3  (trainer.global_trainer)
+python -m trainer.train_refine  # stage 4 TTO (trainer.refiner)
 ```
 
-### Stage 3 — local refinement
+See the script headers for the exact CLI arguments used to produce the released results.
 
-```bash
-python -m trainer.train \
-  -eid restart/local_wland005 \
-  -print-freq 100 -val-freq 20000 -vis-freq 300 \
-  -b 2 -irf 1 -wandb True --gradient-max-norm 1 \
-  --num-iterations 300000 \
-  -wpointr 0.01 -wp2s 0 -wlandd 0.0 --weight-landmarks 0.05 \
-  -wshapereg 1e-6 -wexpreg 1e-5 \
-  -wvertregpliks 1e-5 -wvertregpliks-edge 0.1 \
-  -difr True -wpointmaps 10 -wnorm 4 -wedge 0.01 \
-  --enable-local True \
-  --point-mask-weights '{"w_point_face":0.0,"w_point_ears":0.0,"w_point_eyeballs":1.0,"w_point_eye_region":0.0,"w_point_lips":0.0,"w_point_neck":0.0,"w_point_nostrils":0.0,"w_point_scalp":0.0,"w_point_boundary":0.0}' \
-  --pretrained-path runs/coarse/restart/coarse_difrs/checkpoints/model_00309000.pth
-```
+## Acknowledgements
 
-### Stage 4 — test-time optimization (optional)
-
-```bash
-python -m trainer.train_refine \
-  -eid tto/full_dataset \
-  --gradient-max-norm 1 \
-  -b 1 -irf 1 -difr True -wpointmaps 10 -wnorm 4 \
-  -wp2s 0 -wlandd 0 -wpointr 0.01 -wedge 0.01 \
-  --weight-landmarks 0.5 \
-  --enable-local True \
-  --point-mask-weights '{"w_point_face":0.0,"w_point_ears":0.0,"w_point_eyeballs":1.0,"w_point_eye_region":0.0,"w_point_lips":0.0,"w_point_neck":0.0,"w_point_nostrils":0.0,"w_point_scalp":0.0,"w_point_boundary":0.0}' \
-  -tdl <path-to-train-data-list>.json \
-  -vdl assets/meshes_list_test.json \
-  -refine-lr 1e-3 -refine-steps 105 \
-  --refine-vis True -refine-vis-freq 1 -vis-freq 1 \
-  --pretrained-path runs/<your-stage2-run>/checkpoints/model_00300000.pth \
-  --pretrained-local-path runs/<your-stage3-run>/checkpoints/local_00300000.pth
-```
-
----
+This work builds directly on **[TEMPEH](https://tempeh.is.tue.mpg.de/)** (MPI-IS, 2023); much
+of the multi-view volumetric backbone and data tooling derives from it. We also use
+**[FLAME](https://flame.is.tue.mpg.de/)** and **[pytorch3d](https://pytorch3d.org/)** /
+**[kaolin](https://github.com/NVIDIAGameWorks/kaolin)** for differentiable rendering.
 
 ## License
 
-See [`LICENSE`](LICENSE). The repository builds on the TEMPEH codebase
-(MPI-IS, 2023); please respect the upstream license terms.
+See the [LICENSE](./LICENSE) file. This repository builds on the TEMPEH codebase; please respect
+the upstream license terms at <https://tempeh.is.tue.mpg.de/license.html>.
+
+## Citation
+
+If you find this work useful, please consider citing:
+
+```bibtex
+@inproceedings{filntisis2026mochi,
+    title     = {Registration-Free Learnable Multi-View Capture of Faces in Dense Semantic Correspondence},
+    author    = {Filntisis, Panagiotis P. and Retsinas, George and Daněček, Radek and Sklyarova, Vanessa and Maragos, Petros and Bolkart, Timo},
+    booktitle = {Conference on Computer Vision and Pattern Recognition (CVPR)},
+    year      = {2026}
+}
+```
