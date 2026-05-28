@@ -34,12 +34,11 @@ from option_handler.train_options_global import TrainOptions
 from trainer.global_trainer import Trainer
 from datasets.face_align_dataset_mpi import FaceAlignDatasetMPI
 
-# The training grids were rendered from the 4x-downsampled per-view captures with
-# this resize factor and *without* undistortion (the model consumes the distorted
-# views plus their distortion coefficients). We mirror that here so the demo input
-# matches what the model was trained on.
+# The training grids were built from the 4x-downsampled per-view captures with
+# this resize factor; the model consumes the raw views plus their distortion
+# coefficients (no undistortion). We mirror that here so the demo input matches
+# what the model was trained on.
 PREPROCESS_RESIZE_FACTOR = 4
-UNDISTORT = False
 
 
 def run(config_fname=''):
@@ -70,7 +69,6 @@ def run(config_fname=''):
         image_dir=args.image_directory,
         calibration_dir=args.calibration_directory,
         image_resize_factor=PREPROCESS_RESIZE_FACTOR,
-        undistort_images=UNDISTORT,
     )
     loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
 

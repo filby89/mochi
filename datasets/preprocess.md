@@ -24,48 +24,38 @@ You also need the dense-landmark predictions used as supervision; we use the
 predictions produced by our companion landmark network (see
 `assets/landmark_embedding.npy` for the FLAME embedding).
 
-## 2. Generate the undistorted multi-view grids
+## 2. Generate the multi-view grids
 
-`render_normals_undistorted_test.py` (in this `datasets/` folder) loads each frame, runs
-multi-view rendering of the ground-truth scan to produce normal-map and
-depth-map grids, and writes the per-frame inputs in the layout the trainer
-consumes.
+`build_grids.py` (in this `datasets/` folder) loads each frame, renders the
+ground-truth normal and depth maps from the scan through each view's
+intrinsics + radial distortion, and packs everything into the multi-view grid
+layout the trainer reads.
 
-Edit the hard-coded paths near the top of the file to match your machine:
-
-```python
-in_image_path        = "<famos_root>/downsampled_images_4_no_grid/downsampled_images_4"
-in_calibration_path  = "<famos_root>/downsampled_images_4_no_grid/calibrations"
-in_dense_path        = "<dense_landmark_predictions>"
-in_registration_path = "<famos_root>/registrations"
-in_meshes_path       = "<famos_root>/meshes_npz"
-```
-
-Then run:
+Run it from the repo root:
 
 ```bash
-# run from the repo root (the script uses repo-relative imports and the assets/ folder)
-python -m datasets.render_normals_undistorted_test <START> <END> <OUTPUT_ROOT> <UNDISTORT>
+python -m datasets.build_grids \
+    --data-list assets/meshes_list.json \
+    --image-dir            <famos_root>/downsampled_images_4_no_grid/downsampled_images_4 \
+    --calibration-dir      <famos_root>/downsampled_images_4_no_grid/calibrations \
+    --scan-dir             <famos_root>/meshes_npz \
+    --registration-dir     <famos_root>/registrations \
+    --dense-landmarks-dir  <dense_landmark_predictions> \
+    --out-root             <OUTPUT_ROOT>
 ```
 
-Arguments:
-
-* `<START>`, `<END>` — inclusive/exclusive indices into
-  `assets/meshes_list.json` (or another JSON list of frames). Useful for
-  sharding across nodes.
-* `<OUTPUT_ROOT>` — where the rendered grids are written. The trainer's
-  `image-directory` etc. must point at sub-directories of this root.
-* `<UNDISTORT>` — `1` to undistort the input RGB / re-derive intrinsics,
-  `0` to skip undistortion.
+Use `--start <i>` and `--end <j>` to process a slice of the data list (handy
+for sharding across nodes); see `python -m datasets.build_grids --help` for
+every flag.
 
 The script writes:
 
 ```
 <OUTPUT_ROOT>/
-├── color_images/            # undistorted RGB grids
+├── color_images/            # multi-view RGB grids
 ├── color_normals/           # rendered normal-map grids
 ├── color_depth/             # rendered depth-map grids (.npy)
-├── color_cameras/           # undistorted intrinsics + extrinsics + centers
+├── color_cameras/           # per-view intrinsics + extrinsics + centers + radial distortions
 └── color_dense_landmarks/   # dense landmark predictions reprojected
 ```
 

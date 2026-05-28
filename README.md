@@ -65,9 +65,9 @@ cd ..
 ```
 
 **b) Preprocess into multi-view grids.** Follow [`datasets/preprocess.md`](datasets/preprocess.md),
-which uses [`datasets/render_normals_undistorted_test.py`](datasets/render_normals_undistorted_test.py) to
-undistort the views and render the ground-truth normal/depth grids the trainer reads, and
-documents the expected output layout.
+which uses [`datasets/build_grids.py`](datasets/build_grids.py) to render the
+ground-truth normal/depth maps from the scans and pack them, alongside the multi-view RGB,
+cameras, and dense landmarks, into the grid layout the trainer reads.
 
 ## 3. Demo
 
