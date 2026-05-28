@@ -43,19 +43,11 @@ bash install.sh
 
 `install.sh` pulls PyTorch 2.5.1 (cu124), pytorch3d 0.7.8, MPI-IS `mesh`, kaolin, kornia,
 pyrender, trimesh, wandb, etc., and builds the vendored `liegroups` package under
-`modules/liegroups`. A working compiler toolchain is required. On a headless node, export
+`modules/liegroups`. On a headless node, export
 `PYOPENGL_PLATFORM=egl` before launching to use EGL rendering.
 
-## 2. FLAME model
 
-All project assets — template, region masks (incl. `FLAME_masks.pkl`), landmark embeddings,
-example data lists — ship with the repo under `assets/`. The only exception is the
-**FLAME 2023 model**, which is license-restricted: `install.sh` downloads it for you after
-prompting for your [FLAME](https://flame.is.tue.mpg.de/) account (register and accept the
-license first). It is extracted to `assets/FLAME2023/`, with `flame2023_no_jaw.pkl` loaded by
-default.
-
-## 3. Data
+## 2. Data
 
 MOCHI uses the **FaMoS** dataset, released as part of
 [TEMPEH](https://tempeh.is.tue.mpg.de/). Follow the following steps to prepare the data.
@@ -76,6 +68,30 @@ cd ..
 which uses [`datasets/render_normals_undistorted_test.py`](datasets/render_normals_undistorted_test.py) to
 undistort the views and render the ground-truth normal/depth grids the trainer reads, and
 documents the expected output layout.
+
+## 3. Demo
+
+A minimal forward-only run of the trained coarse + local models on the small FaMoS test subset,
+writing the predicted FLAME-topology mesh per frame. No preprocessing, scans or landmarks are
+needed — `demo.py` consumes the raw multi-view captures directly. Place the released
+`global.pth` and `local.pth` under `pretrained_models/`, then:
+
+```bash
+# 1) fetch the small test subset (prompts for FaMoS/TEMPEH credentials)
+cd famos_download && bash fetch_test_subset.sh && cd ..
+
+# 2) run MOCHI on it
+python demo.py \
+  -local True \
+  --pretrained-path pretrained_models/global.pth \
+  --pretrained-local-path pretrained_models/local.pth \
+  -tdl famos_download/data/test_data_subset/paper_test_frames.json \
+  --image-directory famos_download/data/test_data_subset/test_subset_images_4 \
+  --calibration-directory famos_download/data/test_data_subset/test_subset_calibrations \
+  -eid demo
+```
+
+Predicted meshes are written to `runs/demo/demo_meshes/*.ply`.
 
 ## 4. Training
 
