@@ -9,7 +9,7 @@ PRETRAINED_CKPT="${PRETRAINED_CKPT:-pretrained_models/global.pth}"
 PRETRAINED_LOCAL_CKPT="${PRETRAINED_LOCAL_CKPT:-pretrained_models/local.pth}"
 # Blender binary used for the high-quality TTO visualizations. Override with your own path,
 # e.g. BLENDER_BIN=/path/to/blender bash scripts/stage4_refine.sh
-BLENDER_BIN="${BLENDER_BIN:-/path/to/blender}"
+BLENDER_BIN="${BLENDER_BIN:-/lustre/home/pfilntisis/my_blender/blender-3.6.5-linux-x64/blender}"
 
 
 python -m trainer.train_refine \

@@ -41,6 +41,9 @@ data/test_data_subset/
 *.ckpt
 *.tar.gz
 
+# Large local downloads (not redistributed)
+downloads_landmarks/
+
 # Demo (dropped from the public release for now)
 demo.py
 demo_overlay.py
