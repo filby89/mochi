@@ -22,6 +22,7 @@ pip install -e .
 cd ../..
 pip install imageio scikit-learn scikit-image opendr psutil trimesh pyrender wandb kornia
 pip install git+https://github.com/mattloper/chumpy
+pip install gdown  # used to fetch the dense-landmark archives from Drive
 
 # -----------------------------------------------------------------------------
 # FLAME 2023 model (license-restricted — requires a free FLAME account)

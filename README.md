@@ -73,9 +73,27 @@ cameras, and dense landmarks, into the grid layout the trainer reads.
 
 ## 3. Training
 
-The model trains in three sequential stages, with an optional fourth test-time-optimization
-pass. Edit the data paths in [`scripts/_data_paths.sh`](scripts/_data_paths.sh), then run the
-stage launchers in order:
+Training also needs the **dense-landmark predictions** for FaMoS. These come from a
+synthetic-data-trained landmark detector that is not shipped here, so we release the
+precomputed predictions as two Drive archives:
+
+```bash
+mkdir -p famos_dense_landmarks && cd famos_dense_landmarks
+gdown 19F8IdfmxZw4aXqSvvYlp7Z3R_Ek9vRvQ -O color_dense_landmarks.zip          # ~30 GB
+gdown 1UOtmoTGXdFV4dP9TtmRUHEG9XACc2O_8 -O color_dense_semantic_landmarks.zip # ~1.2 GB
+unzip color_dense_landmarks.zip
+unzip color_dense_semantic_landmarks.zip
+cd ..
+```
+
+This yields `famos_dense_landmarks/{color_dense_landmarks,color_dense_semantic_landmarks}/<subject>/<sequence>/<frame>/…`.
+Point the trainer at them by editing
+[`scripts/_data_paths.sh`](scripts/_data_paths.sh) (`--dense-landmarks-dir` /
+`--dense-semantic-landmarks-dir`).
+
+The model then trains in three sequential stages, with an optional fourth test-time-optimization
+pass. After editing the data paths in `scripts/_data_paths.sh`, run the stage launchers in
+order:
 
 ```bash
 bash scripts/stage1_pretrain.sh   # coarse, no differentiable rendering
