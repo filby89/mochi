@@ -5,10 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/_data_paths.sh
 
-PRETRAINED_CKPT="${PRETRAINED_CKPT:-runs/public_release/coarse_nodifrs/checkpoints/model_00301000.pth}"
+PRETRAINED_CKPT="${PRETRAINED_CKPT:-/fast/pfilntisis/mochi_rebuttal_public/runs/public_release/coarse_nodifrs/checkpoints/model_00301000.pth}"
 
 python -m trainer.train \
-  -eid public_release/coarse_difrs \
+  -eid public_release_v2/coarse_difrs \
   -print-freq 100 -val-freq 100000 -vis-freq 1000 \
   -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
   --num-iterations 300000 \

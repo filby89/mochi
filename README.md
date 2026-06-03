@@ -43,8 +43,10 @@ bash install.sh
 
 `install.sh` pulls PyTorch 2.5.1 (cu124), pytorch3d 0.7.8, MPI-IS `mesh`, kaolin, kornia,
 pyrender, trimesh, wandb, etc., and builds the vendored `liegroups` package under
-`modules/liegroups`. On a headless node, export
-`PYOPENGL_PLATFORM=egl` before launching to use EGL rendering.
+`modules/liegroups`. It also downloads the **FLAME 2023** head model
+(`flame2023_no_jaw.pkl`), which is license-restricted: register at
+<https://flame.is.tue.mpg.de/> and agree to the license first — the script will prompt for
+your FLAME username and password.
 
 
 ## 2. Data
@@ -69,31 +71,7 @@ which uses [`datasets/build_grids.py`](datasets/build_grids.py) to render the
 ground-truth normal/depth maps from the scans and pack them, alongside the multi-view RGB,
 cameras, and dense landmarks, into the grid layout the trainer reads.
 
-## 3. Demo
-
-A minimal forward-only run of the trained coarse + local models on the small FaMoS test subset,
-writing the predicted FLAME-topology mesh per frame. No preprocessing, scans or landmarks are
-needed — `demo.py` consumes the raw multi-view captures directly. Place the released
-`global.pth` and `local.pth` under `pretrained_models/`, then:
-
-```bash
-# 1) fetch the small test subset (prompts for FaMoS/TEMPEH credentials)
-cd famos_download && bash fetch_test_subset.sh && cd ..
-
-# 2) run MOCHI on it
-python demo.py \
-  -local True \
-  --pretrained-path pretrained_models/global.pth \
-  --pretrained-local-path pretrained_models/local.pth \
-  -tdl famos_download/data/test_data_subset/paper_test_frames.json \
-  --image-directory famos_download/data/test_data_subset/test_subset_images_4 \
-  --calibration-directory famos_download/data/test_data_subset/test_subset_calibrations \
-  -eid demo
-```
-
-Predicted meshes are written to `runs/demo/demo_meshes/*.ply`.
-
-## 4. Training
+## 3. Training
 
 The model trains in three sequential stages, with an optional fourth test-time-optimization
 pass. Edit the data paths in [`scripts/_data_paths.sh`](scripts/_data_paths.sh), then run the

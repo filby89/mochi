@@ -5,8 +5,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/_data_paths.sh
 
-PRETRAINED_CKPT="${PRETRAINED_CKPT:-runs/public_release/local_wland02/checkpoints/model_00250000.pth}"
-PRETRAINED_LOCAL_CKPT="${PRETRAINED_LOCAL_CKPT:-runs/public_release/local_wland02/checkpoints/local_00250000.pth}"
+PRETRAINED_CKPT="${PRETRAINED_CKPT:-pretrained_models/global.pth}"
+PRETRAINED_LOCAL_CKPT="${PRETRAINED_LOCAL_CKPT:-pretrained_models/local.pth}"
+# Blender binary used for the high-quality TTO visualizations. Override with your own path,
+# e.g. BLENDER_BIN=/path/to/blender bash scripts/stage4_refine.sh
+BLENDER_BIN="${BLENDER_BIN:-/path/to/blender}"
 
 
 python -m trainer.train_refine \
@@ -21,7 +24,7 @@ python -m trainer.train_refine \
   --refine-vis True -refine-vis-freq 1 -vis-freq 1 \
   --pretrained-path "$PRETRAINED_CKPT" \
   --pretrained-local-path "$PRETRAINED_LOCAL_CKPT" \
-  --visualization-renderer blender --blender-bin /lustre/home/pfilntisis/my_blender/blender-3.6.5-linux-x64/blender \
-  --visualization-renderer blender --render-half-sides-overlay true \
+  --visualization-renderer blender --blender-bin "$BLENDER_BIN" \
+  --render-half-sides-overlay true \
   "${DATA_FLAGS[@]}" \
   "$@"

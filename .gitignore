@@ -41,6 +41,15 @@ data/test_data_subset/
 *.ckpt
 *.tar.gz
 
+# Demo (dropped from the public release for now)
+demo.py
+demo_overlay.py
+run_demo.sh
+demo.sub
+demo.out
+demo.err
+demo.condor.log
+
 # Logs / temp
 *.log
 *.tmp

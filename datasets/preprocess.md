@@ -69,8 +69,8 @@ your output paths:
 -vdl  /path/to/your_val_data_list.json
 --scan-directory      <famos_root>/meshes_npz
 --processed-directory <famos_root>/registrations
---image-directory       <OUTPUT_ROOT>/color_images_v2
---normals-image-directory  <OUTPUT_ROOT>/color_normals_numpy
+--image-directory       <OUTPUT_ROOT>/color_images
+--normals-image-directory  <OUTPUT_ROOT>/color_normals
 --depths-image-directory   <OUTPUT_ROOT>/color_depth
 --calibration-directory    <OUTPUT_ROOT>/color_cameras
 --dense-landmarks-dir      <OUTPUT_ROOT>/color_dense_landmarks
@@ -87,11 +87,11 @@ python -c "
 from datasets.face_align_dataset_mpi_grid import FaceAlignDatasetMPI
 ds = FaceAlignDatasetMPI(
     data_list_fname='<your_train_data_list>.json',
-    image_dir='<OUTPUT_ROOT>/color_images_v2',
+    image_dir='<OUTPUT_ROOT>/color_images',
     calibration_dir='<OUTPUT_ROOT>/color_cameras',
     scan_dir='<famos_root>/meshes_npz',
     registration_root_dir='<famos_root>/registrations',
-    normals_dir='<OUTPUT_ROOT>/color_normals_numpy',
+    normals_dir='<OUTPUT_ROOT>/color_normals',
     depths_dir='<OUTPUT_ROOT>/color_depth',
     dense_landmarks_dir='<OUTPUT_ROOT>/color_dense_landmarks',
     dense_semantic_landmarks_dir='<OUTPUT_ROOT>/color_dense_semantic_landmarks',

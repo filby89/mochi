@@ -35,7 +35,7 @@ import torch.utils.data as data
 from psbody.mesh import Mesh
 from skimage.transform import resize
 
-from utils.camera import load_mpi_camera
+from utils.camera import load_mpi_camera, rotate_image
 from utils.utils import get_filename
 
 
@@ -203,9 +203,32 @@ class FaceAlignDatasetMPI(data.Dataset):
             return None
 
         image = image.astype(np.float32) / 255.0
-        target_h, target_w = camera['image_size'][0], camera['image_size'][1]
-        if image.shape[0] != target_h or image.shape[1] != target_w:
-            image = resize(image, (target_h, target_w), anti_aliasing=True)
+
+        # Optional per-view dense landmarks, loaded before the orientation step so they
+        # can be rotated together with the image (matching the original preprocessing).
+        dense_landmarks = None
+        if self._dense_landmarks_fname is not None:
+            dl_fname = self._dense_landmarks_fname(subject, sequence, frame, view)
+            if os.path.exists(dl_fname):
+                dense_landmarks = np.load(dl_fname).astype(np.float32)
+            else:
+                print(f'No dense landmarks at: {dl_fname}')
+
+        # Replicate the original FaMoS preprocessing (build_grids input pipeline):
+        # resize to the calibration resolution, then rotate portrait views 90 deg to
+        # landscape via the shared utils.camera.rotate_image so every view is landscape
+        # for batching. rotate_image updates the intrinsics (Rt @ K) and image_size, and
+        # rotates the dense landmarks with the same Rt.
+        if image.shape[0] != camera['image_size'][0] or image.shape[1] != camera['image_size'][1]:
+            image = resize(image, (camera['image_size'][0], camera['image_size'][1]), anti_aliasing=True)
+
+        if camera['image_size'][0] > camera['image_size'][1]:
+            rotated = rotate_image(image, camera, landmarks=dense_landmarks, preserve_range=True)
+            image = rotated['image']
+            camera = rotated['camera']
+            if dense_landmarks is not None:
+                dense_landmarks = rotated['landmarks']
+
         image = self.normalize_image(image)
 
         out = {
@@ -216,12 +239,8 @@ class FaceAlignDatasetMPI(data.Dataset):
             'camera_center':     torch.from_numpy(camera['camera_center'].astype(np.float32)),
         }
 
-        if self._dense_landmarks_fname is not None:
-            dl_fname = self._dense_landmarks_fname(subject, sequence, frame, view)
-            if os.path.exists(dl_fname):
-                out['dense_landmarks'] = torch.from_numpy(np.load(dl_fname).astype(np.float32))
-            else:
-                print(f'No dense landmarks at: {dl_fname}')
+        if dense_landmarks is not None:
+            out['dense_landmarks'] = torch.from_numpy(dense_landmarks.astype(np.float32))
 
         return out
 

@@ -1,7 +1,15 @@
 #!/bin/bash
-pip install -r requirements.txt   
-pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-pip install https://github.com/MiroPsota/torch_packages_builder/releases/download/pytorch3d-0.7.8%2B5043d15/pytorch3d-0.7.8%2B5043d15pt2.5.1cu124-cp310-cp310-linux_x86_64.whl
+# Pin numpy<2 for every pip install in this script. The MPI-IS `mesh` build below
+# (`make all` runs `pip install --upgrade -r requirements.txt`) otherwise pulls
+# numpy 2.x, which fails to compile mesh's C++ against the numpy-2 headers.
+CONSTRAINTS="$(mktemp)"
+echo "numpy==1.26.4" > "$CONSTRAINTS"
+export PIP_CONSTRAINT="$CONSTRAINTS"
+
+pip install -r requirements.txt
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+pip install https://github.com/MiroPsota/torch_packages_builder/releases/download/pytorch3d-0.7.8%2B5043d15/pytorch3d-0.7.8%2B5043d15pt2.5.1cu121-cp310-cp310-linux_x86_64.whl
+pip install kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121/index.html
 pip install numpy==1.26.4
 mkdir assets/software
 cd assets/software
@@ -32,6 +40,12 @@ if [ ! -f assets/FLAME2023/flame2023_no_jaw.pkl ]; then
         'https://download.is.tue.mpg.de/download.php?domain=flame&resume=1&sfile=FLAME2023.zip' \
         -O assets/FLAME2023/FLAME2023.zip --no-check-certificate --continue
     unzip -o assets/FLAME2023/FLAME2023.zip -d assets/FLAME2023/
+    # The archive nests everything under a top-level FLAME2023/ folder; flatten it so the
+    # model lands at assets/FLAME2023/flame2023_no_jaw.pkl (the path the code expects).
+    if [ -d assets/FLAME2023/FLAME2023 ]; then
+        mv assets/FLAME2023/FLAME2023/* assets/FLAME2023/
+        rmdir assets/FLAME2023/FLAME2023
+    fi
     rm -f assets/FLAME2023/FLAME2023.zip
     echo "FLAME 2023 model downloaded to assets/FLAME2023/."
 else

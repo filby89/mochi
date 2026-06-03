@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Stage 1 — pretraining, no differentiable rendering.
-# Outputs to runs/public_release/coarse_nodifrs/
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/_data_paths.sh
 
 python -m trainer.train \
-  -eid public_release/coarse_nodifrs \
+  -eid public_release_v2/coarse_nodifrs \
   -print-freq 100 -val-freq 100000 -vis-freq 500 \
   -b 2 -irf 2 -wandb True --gradient-max-norm 1 \
   --num-iterations 300000 \
