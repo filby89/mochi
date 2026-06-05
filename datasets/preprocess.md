@@ -1,6 +1,6 @@
 # FaMoS preprocessing
 
-The training pipeline operates on **undistorted, sub-sampled multi-view image
+The training pipeline operates on **distorted, sub-sampled multi-view image
 grids** rather than the raw FaMoS captures. This document describes how to
 generate the directory layout the training code expects.
 
@@ -20,9 +20,20 @@ After unpacking you should have:
 └── registrations/                   # FLAME registrations
 ```
 
-You also need the dense-landmark predictions used as supervision; we use the
-predictions produced by our companion landmark network (see
-`assets/landmark_embedding.npy` for the FLAME embedding).
+You also need the **dense-landmark predictions** used as supervision during training.
+These come from our companion dense-landmark-detector model:
+
+```bash
+mkdir -p famos_dense_landmarks && cd famos_dense_landmarks
+gdown 19F8IdfmxZw4aXqSvvYlp7Z3R_Ek9vRvQ -O color_dense_landmarks.zip          # ~30 GB
+gdown 1UOtmoTGXdFV4dP9TtmRUHEG9XACc2O_8 -O color_dense_semantic_landmarks.zip # ~1.2 GB
+unzip color_dense_landmarks.zip
+unzip color_dense_semantic_landmarks.zip
+cd ..
+```
+
+This produces `famos_dense_landmarks/{color_dense_landmarks,color_dense_semantic_landmarks}/<subject>/<sequence>/<frame>/…`.
+Pass these paths to `--dense-landmarks-dir` and `--dense-semantic-landmarks-dir` in §3 below.
 
 ## 2. Generate the multi-view grids
 
@@ -40,7 +51,8 @@ python -m datasets.build_grids \
     --calibration-dir      <famos_root>/downsampled_images_4_no_grid/calibrations \
     --scan-dir             <famos_root>/meshes_npz \
     --registration-dir     <famos_root>/registrations \
-    --dense-landmarks-dir  <dense_landmark_predictions> \
+    --dense-landmarks-dir  famos_dense_landmarks/color_dense_landmarks \
+    --dense-semantic-landmarks-dir famos_dense_landmarks/color_dense_semantic_landmarks \
     --out-root             <OUTPUT_ROOT>
 ```
 
@@ -53,10 +65,12 @@ The script writes:
 ```
 <OUTPUT_ROOT>/
 ├── color_images/            # multi-view RGB grids
-├── color_normals/           # rendered normal-map grids
+├── color_normals/           # rendered normal-map preview grids (.png)
+├── color_normals_numpy/     # rendered normal-map training grids (.npy)
 ├── color_depth/             # rendered depth-map grids (.npy)
 ├── color_cameras/           # per-view intrinsics + extrinsics + centers + radial distortions
-└── color_dense_landmarks/   # dense landmark predictions reprojected
+├── color_dense_landmarks/   # dense landmark predictions reprojected
+└── color_dense_semantic_landmarks/ # dense semantic / mediapipe landmark predictions
 ```
 
 ## 3. Wire the trainer to your output
@@ -70,7 +84,7 @@ your output paths:
 --scan-directory      <famos_root>/meshes_npz
 --processed-directory <famos_root>/registrations
 --image-directory       <OUTPUT_ROOT>/color_images
---normals-image-directory  <OUTPUT_ROOT>/color_normals
+--normals-image-directory  <OUTPUT_ROOT>/color_normals_numpy
 --depths-image-directory   <OUTPUT_ROOT>/color_depth
 --calibration-directory    <OUTPUT_ROOT>/color_cameras
 --dense-landmarks-dir      <OUTPUT_ROOT>/color_dense_landmarks
@@ -91,7 +105,7 @@ ds = FaceAlignDatasetMPI(
     calibration_dir='<OUTPUT_ROOT>/color_cameras',
     scan_dir='<famos_root>/meshes_npz',
     registration_root_dir='<famos_root>/registrations',
-    normals_dir='<OUTPUT_ROOT>/color_normals',
+    normals_dir='<OUTPUT_ROOT>/color_normals_numpy',
     depths_dir='<OUTPUT_ROOT>/color_depth',
     dense_landmarks_dir='<OUTPUT_ROOT>/color_dense_landmarks',
     dense_semantic_landmarks_dir='<OUTPUT_ROOT>/color_dense_semantic_landmarks',

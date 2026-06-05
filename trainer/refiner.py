@@ -163,6 +163,8 @@ class Trainer(BaseTrainer):
     def register_dataset(self, index=0):
         from utils import mesh_sampling, utils
 
+        if not self.args.val_data_list_fname:
+            raise ValueError('Refinement requires -vdl/--val-data-list-fname.')
         self.split_list = utils.load_json(self.args.val_data_list_fname)
 
         # create a temporary
@@ -822,7 +824,9 @@ class Trainer(BaseTrainer):
         # print('Params for refinement:', refinement_steps, refinement_lr, refine_layers, 'Save CSV:', save_csv)
         # raise
         # Figure out how many items to loop over
-        split_list = utils.load_json(self.args.train_data_list_fname)
+        if not self.args.val_data_list_fname:
+            raise ValueError('Refinement requires -vdl/--val-data-list-fname.')
+        split_list = utils.load_json(self.args.val_data_list_fname)
         num_items  = len(split_list)
         print(f'[Refine] Total items: {num_items}')
 

@@ -11,9 +11,11 @@ For each frame in the data list this script:
 
       color_images/<subject>/<sequence>/<frame>/<sequence>.<frame>.png
       color_normals/<subject>/<sequence>/<frame>/<sequence>.<frame>.png
+      color_normals_numpy/<subject>/<sequence>/<frame>/<sequence>.<frame>.npy
       color_depth/<subject>/<sequence>/<frame>/<sequence>.<frame>.npy
       color_cameras/<subject>/<sequence>/<frame>/<sequence>.<frame>_intrinsics.npz
       color_dense_landmarks/<subject>/<sequence>/<frame>/<sequence>.<frame>.npy
+      color_dense_semantic_landmarks/<subject>/<sequence>/<frame>/<sequence>.<frame>.npz
 
 Run from the repo root, e.g.::
 
@@ -24,6 +26,7 @@ Run from the repo root, e.g.::
         --scan-dir <famos>/meshes_npz \\
         --registration-dir <famos>/registrations \\
         --dense-landmarks-dir <dense_landmark_predictions> \\
+        --dense-semantic-landmarks-dir <dense_semantic_landmark_predictions> \\
         --out-root <out-root>
 """
 
@@ -56,6 +59,7 @@ def parse_args():
     p.add_argument('--scan-dir',            required=True, help='Per-frame .npz scan meshes root.')
     p.add_argument('--registration-dir',    required=True, help='Per-frame .ply FLAME registrations root.')
     p.add_argument('--dense-landmarks-dir', required=True, help='Per-frame dense-landmark predictions root.')
+    p.add_argument('--dense-semantic-landmarks-dir', required=True, help='Per-frame dense semantic / mediapipe landmark predictions root.')
     p.add_argument('--out-root',            required=True, help='Destination root for the multi-view grids.')
     p.add_argument('--image-resize-factor', type=int, default=4)
     p.add_argument('--start',               type=int, default=0,    help='Inclusive start index into the data list (for sharding).')
@@ -71,10 +75,12 @@ def parse_args():
 def make_out_dirs(out_root):
     dirs = {
         'rgb':              os.path.join(out_root, 'color_images'),
-        'normals':          os.path.join(out_root, 'color_normals'),
+        'normals_preview':  os.path.join(out_root, 'color_normals'),
+        'normals_numpy':    os.path.join(out_root, 'color_normals_numpy'),
         'depth':            os.path.join(out_root, 'color_depth'),
         'cameras':          os.path.join(out_root, 'color_cameras'),
         'dense_landmarks':  os.path.join(out_root, 'color_dense_landmarks'),
+        'dense_semantic_landmarks': os.path.join(out_root, 'color_dense_semantic_landmarks'),
     }
     for d in dirs.values():
         os.makedirs(d, exist_ok=True)
@@ -82,16 +88,17 @@ def make_out_dirs(out_root):
 
 
 def save_frame(dirs, subject, sequence, frame,
-               color_grid, normals_grid, depth_grid,
+               color_grid, normals_preview_grid, normals_numpy_grid, depth_grid,
                intrinsics, extrinsics, centers, radial_distortions,
-               dense_landmarks):
+               dense_landmarks, dense_semantic_landmarks):
     tag = f'{sequence}.{frame}'
     rel = os.path.join(subject, sequence, frame)
     for d in dirs.values():
         os.makedirs(os.path.join(d, rel), exist_ok=True)
 
     imageio.imwrite(os.path.join(dirs['rgb'],             rel, f'{tag}.png'), color_grid)
-    imageio.imwrite(os.path.join(dirs['normals'],         rel, f'{tag}.png'), normals_grid)
+    imageio.imwrite(os.path.join(dirs['normals_preview'], rel, f'{tag}.png'), normals_preview_grid)
+    np.save(        os.path.join(dirs['normals_numpy'],   rel, f'{tag}.npy'), normals_numpy_grid)
     np.save(        os.path.join(dirs['depth'],           rel, f'{tag}.npy'), depth_grid)
     np.savez(       os.path.join(dirs['cameras'],         rel, f'{tag}_intrinsics.npz'),
                     intrinsics=intrinsics,
@@ -99,6 +106,14 @@ def save_frame(dirs, subject, sequence, frame,
                     centers=centers,
                     radial_distortions=radial_distortions)
     np.save(        os.path.join(dirs['dense_landmarks'], rel, f'{tag}.npy'), dense_landmarks)
+    np.savez(       os.path.join(dirs['dense_semantic_landmarks'], rel, f'{tag}.npz'),
+                    **dense_semantic_landmarks)
+
+
+def load_dense_semantic_landmarks(root, subject, sequence, frame):
+    path = os.path.join(root, subject, sequence, frame, f'{sequence}.{frame}.npz')
+    with np.load(path) as data:
+        return {key: data[key] for key in data.files}
 
 
 # ----------------------------------------------------------------------------
@@ -174,18 +189,24 @@ def main():
             normals_grid = np.hstack([
                 (normals[i].cpu().numpy() * 255).astype(np.uint8) for i in range(normals.shape[0])
             ])
+            normals_numpy_grid = np.hstack([
+                normals[i].cpu().numpy().astype(np.float32) for i in range(normals.shape[0])
+            ])
             depth_grid = np.hstack([
                 depth[i].cpu().numpy() for i in range(depth.shape[0])
             ])
+            dense_semantic_landmarks = load_dense_semantic_landmarks(
+                args.dense_semantic_landmarks_dir, subject, sequence, frame)
 
             save_frame(
                 dirs, subject, sequence, frame,
-                color_grid, normals_grid, depth_grid,
+                color_grid, normals_grid, normals_numpy_grid, depth_grid,
                 intrinsics=K[0].cpu().numpy(),
                 extrinsics=E[0].cpu().numpy(),
                 centers=centers_np,
                 radial_distortions=D[0].cpu().numpy(),
                 dense_landmarks=sample['color_camera_dense_landmarks'][0].cpu().numpy(),
+                dense_semantic_landmarks=dense_semantic_landmarks,
             )
     finally:
         if os.path.exists(slice_path):

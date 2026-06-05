@@ -57,6 +57,9 @@ demo.condor.log
 *.log
 *.tmp
 *.bak
+test_build_grids.sh
+test_build_grids_real.sh
+test_output/
 out.txt
 prompt.md
 debug_*.png

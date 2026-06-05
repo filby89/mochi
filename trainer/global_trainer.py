@@ -73,7 +73,6 @@ class Trainer(BaseTrainer):
     def register_model(self):
         import models.model_aligner.prototypes.model_global_stage as models
         model = models.Model(args=self.args)
-        model.initialize(init_method='normal')
         self.model = model.to(self.device)
 
         self.base_model = models.Model(self.args).to(self.device)

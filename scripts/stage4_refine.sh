@@ -17,7 +17,7 @@ python -m trainer.train_refine \
   --gradient-max-norm 1 \
   -b 1 -irf 1 -difr True -wpointmaps 10 -wnorm 4 \
   -wp2s 0 -wlandd 0 -wpointr 0.01 -wedge 0.01 \
-  --weight-landmarks 0.5 \
+  --weight-landmarks 0.2 \
   --enable-local True \
   --point-mask-weights '{"w_point_face":0.0,"w_point_ears":0.0,"w_point_eyeballs":1.0,"w_point_eye_region":0.0,"w_point_lips":0.0,"w_point_neck":0.0,"w_point_nostrils":0.0,"w_point_scalp":0.0,"w_point_boundary":0.0}' \
   -refine-lr 1e-3 -refine-steps 51 \
