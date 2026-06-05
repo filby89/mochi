@@ -102,6 +102,23 @@ bash scripts/stage3_local.sh      # local refinement                    (needs s
 bash scripts/stage4_refine.sh     # optional per-scene TTO              (needs stage 3)
 ```
 
+## 4. Pretrained models
+
+We release the trained MOCHI checkpoints so you can run the test-time optimization (stage 4) —
+or start local refinement (stage 3) — without retraining from scratch. Download them with
+`gdown` into `pretrained_models/` (the default paths the stage scripts expect):
+
+```bash
+mkdir -p pretrained_models
+gdown 1YFs_CUUyzwtjwrO-sbBZ3FWOXZdMjLGJ -O pretrained_models/global.pth   # coarse global model (stages 1-2)
+gdown 1d0cCVz344RtKcB4X5DfverupZtHKumCS -O pretrained_models/local.pth    # local refinement model (stage 3)
+```
+
+`scripts/stage3_local.sh` and `scripts/stage4_refine.sh` default to
+`pretrained_models/global.pth` and `pretrained_models/local.pth`; override them via the
+`PRETRAINED_CKPT` / `PRETRAINED_LOCAL_CKPT` environment variables if you store the checkpoints
+elsewhere.
+
 ## Acknowledgements
 
 This work builds directly on **[TEMPEH](https://tempeh.is.tue.mpg.de/)** (MPI-IS, 2023); much
